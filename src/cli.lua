@@ -73,10 +73,11 @@ while i <= #arg do
 
             local content = table.concat(lines_from(filename), "\n");
             -- Load Config from File
-            local func = loadstring(content);
-            -- Sandboxing
-            setfenv(func, {});
-            config = func();
+            local func, err = load(content, "config", "t", {}) -- Lua 5.2+ replacement
+if not func then
+    Prometheus.Logger:error("Failed to load config: " .. err)
+end
+config = func()
         elseif curr == "--out" or curr == "--o" then
             i = i + 1;
             if(outFile) then
