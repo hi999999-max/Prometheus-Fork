@@ -143,7 +143,7 @@ function Tokenizer:new(settings)
 		Symbols           = conventions.Symbols,
 		SymbolsLookup     = lookupify(conventions.Symbols),
 		
-		StringStartLookup = lookupify({"\"", "\'"}),
+		StringStartLookup = lookupify({"\"", "\'", "`"}),
 		annotations = {},
 	};
 	
@@ -366,67 +366,75 @@ function Tokenizer:ident()
 end
 
 function Tokenizer:singleLineString()
-	local startPos = self.index;
-	local startChar = expect(self, self.StringStartLookup);
-	local buffer = {};
+	local startPos = self.index
+	local startChar = expect(self, self.StringStartLookup)
+	local buffer = {}
 
 	while (not is(self, startChar)) do
-		local char = get(self);
-		
-		-- Single Line String may not contain Linebreaks except when they are escaped by \
-		if(char == '\n') then
-			self.index = self.index - 1;
-			logger:error(generateError(self, "Unterminated String"));
+		local char = get(self)
+
+		-- Single Line String may not contain Linebreaks except when escaped
+		if char == '\n' and startChar ~= '`' then
+			-- backtick template strings allow newlines in Luau
+			self.index = self.index - 1
+			logger:error(generateError(self, "Unterminated String"))
 		end
-		
-		
-		if(char == "\\") then
-			char = get(self);
-			
-			local escape = self.EscapeSequences[char];
-			if(type(escape) == "string") then
-				char = escape;
-				
-			elseif(self.NumericalEscapes and self.NumberCharsLookup[char]) then
-				local numstr = char;
-				
-				if(is(self, self.NumberCharsLookup)) then
-					char = get(self);
-					numstr = numstr .. char;
+
+		-- Handle escape sequences
+		if char == "\\" then
+			char = get(self)
+
+			local escape = self.EscapeSequences[char]
+			if type(escape) == "string" then
+				char = escape
+
+			elseif self.NumericalEscapes and self.NumberCharsLookup[char] then
+				local numstr = char
+				if is(self, self.NumberCharsLookup) then
+					char = get(self)
+					numstr = numstr .. char
 				end
-		
-				if(is(self, self.NumberCharsLookup)) then
-					char = get(self);
-					numstr = numstr .. char;
+				if is(self, self.NumberCharsLookup) then
+					char = get(self)
+					numstr = numstr .. char
 				end
-				
-				char = string.char(tonumber(numstr));
-				
-			elseif(self.UnicodeEscapes and char == "u") then
-				expect(self, "{");
-				local num = "";
-				while (is(self, self.HexNumberCharsLookup)) do
-					num = num .. get(self);
+				char = string.char(tonumber(numstr))
+
+			elseif self.UnicodeEscapes and char == "u" then
+				expect(self, "{")
+				local num = ""
+				while is(self, self.HexNumberCharsLookup) do
+					num = num .. get(self)
 				end
-				expect(self, "}");
-				char = util.utf8char(tonumber(num, 16));
-			elseif(self.HexEscapes and char == "x") then
-				local hex = expect(self, self.HexNumberCharsLookup) .. expect(self, self.HexNumberCharsLookup);
-				char = string.char(tonumber(hex, 16));
-			elseif(self.EscapeZIgnoreNextWhitespace and char == "z") then
-				char = "";
-				while(is(self, Tokenizer.WHITESPACE_CHARS)) do
-					self.index = self.index + 1;
+				expect(self, "}")
+				char = util.utf8char(tonumber(num, 16))
+
+			elseif self.HexEscapes and char == "x" then
+				local hex = expect(self, self.HexNumberCharsLookup) .. expect(self, self.HexNumberCharsLookup)
+				char = string.char(tonumber(hex, 16))
+
+			elseif self.EscapeZIgnoreNextWhitespace and char == "z" then
+				char = ""
+				while is(self, Tokenizer.WHITESPACE_CHARS) do
+					self.index = self.index + 1
 				end
 			end
 		end
-		
-		--// since table.insert is slower in lua51
+
+		-- Optional: detect {expr} in backtick strings for future parsing
+		if startChar == '`' and char == '{' then
+			-- insert a marker token or leave as-is for now
+			-- we just collect literal text for initial support
+			buffer[#buffer + 1] = '{'
+			goto continue
+		end
+
 		buffer[#buffer + 1] = char
+		::continue::
 	end
-	
-	expect(self, startChar);
-	
+
+	expect(self, startChar)
+
 	return token(self, startPos, Tokenizer.TokenKind.String, table.concat(buffer))
 end
 
