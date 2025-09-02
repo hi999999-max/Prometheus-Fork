@@ -1,6 +1,6 @@
 -- This Script is Part of the Prometheus Obfuscator by Levno_710
 --
--- AntiTamper.lua
+-- AntiTamper.lua (modified)
 --
 -- This Script provides an Obfuscation Step, that breaks the script, when someone tries to tamper with it.
 
@@ -21,6 +21,11 @@ AntiTamper.SettingsDescriptor = {
         type = "boolean",
         default = true,
         description = "Use debug library. (Recommended, however scripts will not work without debug library.)"
+    },
+    CheckUnPack = {
+        type = "boolean",
+        default = false,
+        description = "Wrap and monitor unpack/table.unpack for tampering. When true the generated script will protect and periodically check unpack for at least 5 seconds."
     }
 }
 
@@ -183,6 +188,90 @@ end
 
     repeat until valid;
     ]]
+
+    -- If CheckUnPack setting is enabled, append the wrapper & monitoring code
+    if self.CheckUnPack then
+        code = code .. [[
+
+-- CheckUnPack Protection
+-- Anti-Tamper wrapper for unpack / table.unpack
+-- Prints a friendly message and sends chat if someone tries to overwrite unpack
+
+-- Save original
+local original_unpack = rawget(_G, "unpack") or (table and table.unpack)
+if type(original_unpack) ~= "function" then
+    original_unpack = function(tbl, i, j)
+        if table and table.unpack then
+            return table.unpack(tbl, i, j)
+        end
+        error("unpack/table.unpack unavailable")
+    end
+end
+
+local protected_ref = nil
+
+-- Wrapper: just calls original
+local function wrapper_unpack(tbl, i, j)
+    return original_unpack(tbl, i, j)
+end
+
+protected_ref = wrapper_unpack
+
+-- Set global safely
+if rawset and _G then
+    rawset(_G, "unpack", wrapper_unpack)
+else
+    _G["unpack"] = wrapper_unpack
+end
+if type(getgenv) == "function" then
+    pcall(function() getgenv().unpack = wrapper_unpack end)
+end
+
+-- Anti-tamper notification
+local function check_unpack()
+    local current_unpack = rawget(_G, "unpack") or (table and table.unpack)
+    if not rawequal(current_unpack, original_unpack) and not rawequal(current_unpack, protected_ref) then
+        pcall(function()
+            print("Hmm? Tried tampering? Won't work buddy.")
+        end)
+
+        -- Send chat messages safely
+        local success, TextChatService = pcall(function()
+            return game and game.GetService and game:GetService("TextChatService")
+        end)
+        if success and TextChatService and TextChatService.TextChannels then
+            local RBXGeneral = TextChatService.TextChannels.RBXGeneral
+            if RBXGeneral then
+                pcall(function()
+                    RBXGeneral:SendAsync("I'm A Skid!")
+                end)
+            end
+        end
+    end
+end
+
+-- Monitor periodically for at least 5 seconds
+spawn(function()
+    local ok, tick_fn = pcall(function() return tick end)
+    local startTime = (ok and tick_fn) and tick() or os.time()
+    while true do
+        -- use task.wait if available, else fallback
+        if type(task) == "table" and type(task.wait) == "function" then
+            pcall(task.wait, 0.01)
+        else
+            pcall(function() wait(0.01) end)
+        end
+        pcall(check_unpack)
+        -- Stop after 5 seconds
+        local now = (ok and tick_fn) and tick() or os.time()
+        if now - startTime >= 5 then
+            break
+        end
+    end
+end)
+
+        ]]
+    end
 
     local parsed = Parser:new({LuaVersion = Enums.LuaVersion.Lua51}):parse(code);
     local doStat = parsed.body.statements[1];
