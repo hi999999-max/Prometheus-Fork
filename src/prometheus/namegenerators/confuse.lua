@@ -4,8 +4,8 @@
 --
 -- This Script provides a function for generation of confusing variable names
 
-local util = require("prometheus.util");
-local chararray = util.chararray;
+local util = require("prometheus.util")
+local chararray = util.chararray
 
 local varNames = {
     "index",
@@ -144,26 +144,101 @@ local varNames = {
     "assert",
     "collectgarbage",
     "a", "b", "c", "i", "j", "m",
+
+    -- Additional confusing names (expanded heavily)
+    "l", "I", "O", "O0", "O_O", "Il", "lI", "l1", "I1",
+    "L1", "IIII", "llll", "i_i", "i_i_i", "l_l_l", "O0O", "O00",
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "null_", "nil_", "true_", "false_", "maybe", "possibly", "unknown",
+    "placeholder", "placeholder0", "placeholder_1", "temp", "tmp", "tmp1", "tmp2",
+    "tempvar", "tempVar", "temp_var", "trash", "garbage", "garbage1", "junk",
+    "__meta__", "__init__", "__index", "__newindex", "__call", "__tostring",
+    "splice", "splice1", "splice_1", "join", "concat", "concat_all", "split",
+    "map", "filter", "reduce", "fold", "acc", "accumulator", "ctx", "context",
+    "state", "statenode", "node", "leaf", "branch", "root", "trunk", "stem",
+    "seed", "kernel", "payload", "packet", "buffer", "buf", "heap", "stack",
+    "frame", "frame0", "frame1", "frame_0", "frame_1", "slot", "slot0", "slot_",
+    "slot_1", "slotA", "slotB", "slotC", "slotX",
+    "handler", "handler0", "handler_", "handler_fn", "callback", "cb", "cb_",
+    "cb0", "cb1", "cb2", "listener", "subscriber", "sub", "pub", "publisher",
+    "subscriber_", "evt", "event", "evts", "events_list", "queue", "q", "q0",
+    "queue_head", "queue_tail", "cursor", "cursor0", "cursor_1", "pointer", "ptr",
+    "ref", "ref0", "ref_", "refid", "refID", "uuid", "guid", "id", "ID",
+    "identity", "ident", "marker", "mark", "tag", "label", "lbl", "flag", "flags",
+    "meta", "props", "properties", "cfg", "config", "configuration", "opts", "options",
+    "settings", "prefs", "preferences", "prefs0", "build", "compile", "compiler",
+    "linker", "loader_", "bootstrap", "bootstrapper", "init", "setup", "teardown",
+    "cleanup", "cleanup0", "finalize", "fin", "finish", "done", "complete", "ok",
+    "success", "failure", "err", "error_code", "errno", "status_", "statecode",
+    "phase", "phase1", "phase2", "stage", "stage_0", "stageA", "stageB",
+    "sequence", "seq", "seqno", "counter", "ctr", "counting", "count_1",
+    "rolling", "cycling", "rotor", "rot", "rng", "random", "entropy", "seed0",
+    "salt", "pepper", "spice", "sauce", "s0", "s1", "x", "y", "z",
+    "xy", "xyz", "xyzz", "alpha", "beta", "gamma", "delta", "epsilon",
+    "omega", "phi", "psi", "chi", "theta", "tau", "sigma",
+    "moduleA", "module_B", "packA", "pack_B", "lib", "library", "libs",
+    "sys", "system", "kernel_", "kernel32", "ntdll", "user32", "userland",
+    "platform", "platform_", "platformX", "osname", "host", "hostname", "domain",
+    "network", "net", "sock", "socket", "conn", "connection", "conn_1", "connA",
+    "server", "client", "peer", "remote", "local", "localhost", "loopback",
+    "stdin", "stdout", "stderr", "reader", "writer", "stream", "streams",
+    "reader0", "writer0", "pipe", "pipeA", "pipe_B", "fd", "filedesc", "fd0",
+    "file0", "f0", "f1", "path0", "resource", "res", "res0", "handle",
+    "h", "handle0", "handle_1", "token", "auth", "auth0", "acl", "perm",
+    "permission", "permissions", "cap", "caps", "capabilities", "priv", "privs",
+    "role", "role_admin", "role_user", "user_", "user0", "usr", "usr0",
+    "profile", "profile0", "profile_data", "pdata", "prefs_data", "cache", "cache0",
+    "cached", "cache_key", "cacheid", "index_index", "iterator_iterator", "i_i_i",
+    "l1l1", "IIII1", "llll1", "meta_meta", "meta1", "meta_01", "meta_02",
+    "alpha_beta", "beta_alpha", "ab", "ba", "az", "za", "mn", "nm",
+    "randomized", "shuffled", "shuffler", "shuffler0", "mystery", "mystery0",
+    "obfuscate", "obf", "obf_", "obf0", "confuse", "confuse_me", "confuser",
+    "bewilder", "bemuse", "perplex", "baffle", "stupefy", "daze", "fog", "smoke",
+    "mirror", "mirror_", "reverse", "rev", "invert", "flip", "flop", "twist",
+    "torture", "tort", "tort_1", "maze", "labyrinth", "maze0", "maze_of_vars",
+    "deep", "deeper", "deepest", "depth", "depth0", "layer", "layer1", "layer_2",
+    "stacked", "nested", "nested_1", "nest", "nest0", "wrap", "wrapper", "wrap0",
+    "wrap_it", "wrap_all", "chain", "chain0", "chain_a", "chain_b",
+    "alias", "aliases", "alias_1", "aliasA", "aliasB", "aliasX", "aliasY",
+    "shadow", "shadowed", "shadowing", "hide", "hidden", "hidden0", "ghost",
+    "phantom", "phantom_", "specter", "spirit", "poltergeist", "haunt",
+    "legitimate", "legit", "fake", "faker", "forged", "forge", "bogus",
+    "phony", "counterfeit", "mismatch", "similar", "sim", "sim0", "sim1",
+    "almost", "almost_same", "same_but_not", "not_same", "not_same0", "dupe",
+    "duplicate", "dup", "dup0", "collision", "col", "col0", "alias_col",
+    "weird", "oddball", "quirk", "quirky", "quirk0", "peculiar", "peculiar_",
+    "strange", "strange_0", "strange1", "confounding", "permutation", "perm_",
+    "permute", "permute_1", "mix", "mixer", "mixer0", "blend", "blend0",
+    "muddle", "muddle_", "scramble", "scramble0", "scramble_1", "hash", "hash0",
+    "hsh", "hsh_0", "encode", "decode", "codec", "codec0", "enc", "dec",
+    "encrypt", "decrypt", "crypt", "crypt0", "cipher", "cipher0",
+    "safe", "unsafe", "unsafe_", "danger", "danger_zone", "panic", "panic0",
+    "boom", "kaboom", "explode", "implode", "implode_", "collapse", "crash_",
+    "silent", "loud", "noisy", "quiet", "mute", "muted", "whisper",
+    "yell", "shout", "announce", "announce_0", "broadcast", "msg", "message",
+    "msg0", "log", "logger", "logger0", "logfile", "logfile0", "history",
+    "hist", "trace", "tracer", "trace0", "breadcrumb", "crumb", "crumb0",
+    "footprint", "fp", "sig", "signature", "sig0", "sig_1",
 }
 
 local function generateName(id, scope)
-    local name = {};
+    local name = {}
     local d = id % #varNames
-	id = (id - d) / #varNames
-	table.insert(name, varNames[d + 1]);
-	while id > 0 do
-		local d = id % #varNames
-		id = (id - d) / #varNames
-		table.insert(name, varNames[d + 1]);
-	end
-	return table.concat(name, "_");
+    id = (id - d) / #varNames
+    table.insert(name, varNames[d + 1])
+    while id > 0 do
+        local d = id % #varNames
+        id = (id - d) / #varNames
+        table.insert(name, varNames[d + 1])
+    end
+    return table.concat(name, "_")
 end
 
 local function prepare(ast)
-    util.shuffle(varNames);
+    util.shuffle(varNames)
 end
 
 return {
-	generateName = generateName, 
-	prepare = prepare
-};
+    generateName = generateName,
+    prepare = prepare
+}
