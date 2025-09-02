@@ -219,7 +219,6 @@ function ConstantArray:addDecodeCode(ast)
         return
     end
 
-    -- Build appropriate decode code string; we will replace ARR and KEY (if used)
     local ascii85_decode_snip = [[
 local function ascii85_decode(str)
     local res = {}
@@ -263,14 +262,12 @@ local function ascii85_decode(str)
 end
 ]]
 
+    -- Safe bxor snippet: try bit32/bit, otherwise arithmetic fallback
     local xor_snip = [[
 local function bxor(a, b)
-    -- try common bit libraries/operators first for speed
     if bit32 and bit32.bxor then return bit32.bxor(a, b) end
     if bit and bit.bxor then return bit.bxor(a, b) end
-    local ok, op = pcall(function() return a ~ b end)
-    if ok then return op end
-    -- fallback: arithmetic per-bit XOR (works in plain Lua 5.1)
+    -- arithmetic fallback (per-bit)
     local res = 0
     local bitval = 1
     for i = 0, 7 do
@@ -309,20 +306,16 @@ for i = 1, #ARR do
 end
 ]]
 
-    -- choose final code
     local finalCode
     if self.Encoding == "ascii85" then
         finalCode = ascii85_decode_snip .. "\n" .. ascii_snip_loop
     elseif self.Encoding == "xor" then
         finalCode = ascii85_decode_snip .. "\n" .. xor_snip
     else
-        -- should not happen (handled earlier), but safe fallback
         finalCode = ""
     end
 
-    -- insert into AST if we have runtime code to inject
     if finalCode ~= "" then
-        -- If using xor, we must replace the placeholder KEY with an actual numeric key literal
         if self.Encoding == "xor" then
             finalCode = string.gsub(finalCode, "KEY", tostring(self.xor_key or 0))
         end
@@ -332,31 +325,24 @@ end
         })
 
         local newAst = parser:parse(finalCode)
-        local forStat = newAst.body.statements[1] or newAst.body.statements[2] -- ascii85_decode_snip is a function + loop; we insert the first statement relevant to arr handling
-        -- ensure we attach the runtime scopes properly
-        if forStat and forStat.body and forStat.body.scope then
-            forStat.body.scope:setParent(ast.body.scope)
-        end
-
-        visitast(newAst, nil, function(node, data)
-            if node.kind == AstKind.VariableExpression then
-                if node.scope:getVariableName(node.id) == "ARR" then
-                    data.scope:removeReferenceToHigherScope(node.scope, node.id)
-                    data.scope:addReferenceToHigherScope(self.rootScope, self.arrId)
-                    node.scope = self.rootScope
-                    node.id = self.arrId
-                end
-            end
-        end)
-
-        -- Insert all function/loop statements at the start in the same order they appear
+        -- Insert all function/loop statements at the start (preserve order)
         for i = #newAst.body.statements, 1, -1 do
             local st = newAst.body.statements[i]
+            -- make sure scopes referencing ARR are rewired to root scope/arrId
+            visitast(st, nil, function(node, data)
+                if node.kind == AstKind.VariableExpression then
+                    if node.scope:getVariableName(node.id) == "ARR" then
+                        data.scope:removeReferenceToHigherScope(node.scope, node.id)
+                        data.scope:addReferenceToHigherScope(self.rootScope, self.arrId)
+                        node.scope = self.rootScope
+                        node.id = self.arrId
+                    end
+                end
+            end)
             table.insert(ast.body.statements, 1, st)
         end
     end
 end
-
 -- create a keyed table for base64 lookup (unused by new features but kept)
 function ConstantArray:createBase64Lookup()
     local entries = {};
