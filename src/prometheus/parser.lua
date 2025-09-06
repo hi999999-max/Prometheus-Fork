@@ -61,6 +61,10 @@ end
 
 local function consume(parser, kind, value)
     local tok = parser.current
+    if not tok then
+        return false
+    end
+
     if tok.kind == kind and (value == nil or tok.value == value) then
         parser:advance()  -- move to next token
         return true
