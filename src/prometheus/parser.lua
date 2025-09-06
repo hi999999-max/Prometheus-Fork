@@ -55,6 +55,10 @@ local function generateWarning(token, message)
 	return "Warning at Position " .. tostring(token.line) .. ":" .. tostring(token.linePos) .. ", " .. message;
 end
 
+local function is(token, kind)
+    return token.kind == kind
+end
+
 -- Parse a simple type annotation (currently supports identifier types and 'nil')
 function Parser:parseType()
     -- Accept an identifier type: e.g. "string", "number", "MyType"
