@@ -29,37 +29,41 @@ local keys = util.keys;
 
 local TokenKind = Tokenizer.TokenKind;
 
--- Read a type annotation until comma or closing parenthesis at depth 0.
--- Handles nested brackets/parentheses/angles by counting depth.
 local function parseTypeAnnotation(self)
-	local parts = {}
-	local depth = 0
-	while true do
-		local tk = self:peek(0)
-		if not tk then break end
-		-- stop when at depth 0 and see comma or closing paren
-		if depth == 0 and tk.kind == TokenKind.Symbol and (tk.source == "," or tk.source == ")") then
-			break
-		end
+    local parts = {}
+    local depth = 0
+    while true do
+        local tk = peek(self, 0)  -- <-- use local peek
+        if not tk then break end
+        if depth == 0 and tk.kind == TokenKind.Symbol and (tk.source == "," or tk.source == ")") then
+            break
+        end
 
-		-- adjust depth for nesting symbols
-		if tk.kind == TokenKind.Symbol then
-			if tk.source == "(" or tk.source == "{" or tk.source == "[" or tk.source == "<" then
-				depth = depth + 1
-			elseif tk.source == ")" or tk.source == "}" or tk.source == "]" or tk.source == ">" then
-				-- consume the closing bracket into the annotation
-				depth = math.max(0, depth - 1)
-			end
-		end
+        if tk.kind == TokenKind.Symbol then
+            if tk.source == "(" or tk.source == "{" or tk.source == "[" or tk.source == "<" then
+                depth = depth + 1
+            elseif tk.source == ")" or tk.source == "}" or tk.source == "]" or tk.source == ">" then
+                depth = math.max(0, depth - 1)
+            end
+        end
 
-		-- consume token into parts
-		table.insert(parts, self:get().source)
-	end
-
-	return table.concat(parts, " ")
+        table.insert(parts, get(self).source) -- <-- use local get
+    end
+    return table.concat(parts, " ")
 end
 
 local Parser = {};
+
+function Parser:peek(offset)
+    offset = offset or 0
+    return self.tokens[self.pos + offset]
+end
+
+function Parser:get()
+    local tk = self.tokens[self.pos]
+    self.pos = self.pos + 1
+    return tk
+end
 
 local ASSIGNMENT_NO_WARN_LOOKUP = lookupify{
 	AstKind.NilExpression,
