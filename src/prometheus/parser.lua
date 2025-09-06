@@ -29,41 +29,7 @@ local keys = util.keys;
 
 local TokenKind = Tokenizer.TokenKind;
 
-local function parseTypeAnnotation(self)
-    local parts = {}
-    local depth = 0
-    while true do
-        local tk = peek(self, 1)  -- <-- use local peek
-        if not tk then break end
-        if depth == 0 and tk.kind == TokenKind.Symbol and (tk.source == "," or tk.source == ")") then
-            break
-        end
-
-        if tk.kind == TokenKind.Symbol then
-            if tk.source == "(" or tk.source == "{" or tk.source == "[" or tk.source == "<" then
-                depth = depth + 1
-            elseif tk.source == ")" or tk.source == "}" or tk.source == "]" or tk.source == ">" then
-                depth = math.max(0, depth - 1)
-            end
-        end
-
-        table.insert(parts, get(self).source) -- <-- use local get
-    end
-    return table.concat(parts, " ")
-end
-
 local Parser = {};
-
-function Parser:peek(offset)
-    offset = offset or 0
-    return self.tokens[self.pos + offset]
-end
-
-function Parser:get()
-    local tk = self.tokens[self.pos]
-    self.pos = self.pos + 1
-    return tk
-end
 
 local ASSIGNMENT_NO_WARN_LOOKUP = lookupify{
 	AstKind.NilExpression,
@@ -87,6 +53,29 @@ end
 
 local function generateWarning(token, message)
 	return "Warning at Position " .. tostring(token.line) .. ":" .. tostring(token.linePos) .. ", " .. message;
+end
+
+-- Parse a simple type annotation (currently supports identifier types and 'nil')
+function Parser:parseType()
+    -- Accept an identifier type: e.g. "string", "number", "MyType"
+    if is(self, TokenKind.Ident) then
+        return get(self).value
+    end
+
+    -- Accept 'nil' as a type keyword
+    if consume(self, TokenKind.Keyword, "nil") then
+        return "nil"
+    end
+
+    -- Parenthesized single type (allows future extension)
+    if consume(self, TokenKind.Symbol, "(") then
+        local t = self:parseType()
+        expect(self, TokenKind.Symbol, ")")
+        return t
+    end
+
+    if self.disableLog then error() end
+    logger:error(generateError(self, "expected a type annotation"));
 end
 
 function Parser:new(settings)
@@ -307,41 +296,36 @@ function Parser:statement(scope, currentLoop)
 	end
 	
 	-- Function Declaration
-if(consume(self, TokenKind.Keyword, "function")) then
-	-- Parse function name (may include dots and colon for method)
-	local obj = self:funcName(scope);
-	local baseScope = obj.scope;
-	local baseId = obj.id;
-	local indices = obj.indices;
+	if(consume(self, TokenKind.Keyword, "function")) then
+		-- TODO: Parse Function Declaration Name
+		local obj = self:funcName(scope);
+		local baseScope = obj.scope;
+		local baseId = obj.id;
+		local indices = obj.indices;
+		
+		local funcScope = Scope:new(scope);
+		
+		expect(self, TokenKind.Symbol, "(");
+local args = self:functionArgList(funcScope);
+expect(self, TokenKind.Symbol, ")");
 
-	local funcScope = Scope:new(scope);
-
-	expect(self, TokenKind.Symbol, "(");
-	local args = self:functionArgList(funcScope);
-	expect(self, TokenKind.Symbol, ")");
-
-	-- Optional return type annotation: `) : TypeExpr`
-	local returnType = nil;
-	if(consume(self, TokenKind.Symbol, ":")) then
-		returnType = parseTypeAnnotation(self);
-	end
-
-	if(obj.passSelf) then
-		local id = funcScope:addVariable("self", obj.token);
-		table.insert(args, 1, Ast.VariableExpression(funcScope, id));
-	end
-
-	local body = self:block(nil, false, funcScope);
-	expect(self, TokenKind.Keyword, "end");
-
-	-- create node and attach returnType for emitter/obfuscator
-	local node = Ast.FunctionDeclaration(baseScope, baseId, indices, args, body);
-	if returnType then
-		node.returnType = returnType;
-	end
-
-	return node;
+-- optional return type annotation: ) : Type
+local returnType = nil
+if(consume(self, TokenKind.Symbol, ":")) then
+    returnType = self:parseType()
 end
+
+if(obj.passSelf) then
+    local id = funcScope:addVariable("self", obj.token);
+    table.insert(args, 1, Ast.VariableExpression(funcScope, id));
+end
+
+local body = self:block(nil, false, funcScope);
+expect(self, TokenKind.Keyword, "end");
+
+local node = Ast.FunctionDeclaration(baseScope, baseId, indices, args, body);
+if returnType then node.returnType = returnType end
+return node;
 	
 	-- Local Function or Variable Declaration
 	if(consume(self, TokenKind.Keyword, "local")) then
@@ -354,13 +338,21 @@ end
 			local funcScope = Scope:new(scope);
 			
 			expect(self, TokenKind.Symbol, "(");
-			local args = self:functionArgList(funcScope);
-			expect(self, TokenKind.Symbol, ")");
+local args = self:functionArgList(funcScope);
+expect(self, TokenKind.Symbol, ")");
 
-			local body = self:block(nil, false, funcScope);
-			expect(self, TokenKind.Keyword, "end");
+-- optional return type annotation for local function
+local returnType = nil
+if(consume(self, TokenKind.Symbol, ":")) then
+    returnType = self:parseType()
+end
 
-			return Ast.LocalFunctionDeclaration(scope, id, args, body);
+local body = self:block(nil, false, funcScope);
+expect(self, TokenKind.Keyword, "end");
+
+local node = Ast.LocalFunctionDeclaration(scope, id, args, body);
+if returnType then node.returnType = returnType end
+return node;
 		end
 		
 		-- Local Variable Declaration
@@ -784,64 +776,77 @@ function Parser:expressionFunctionLiteral(parentScope)
 	local scope = Scope:new(parentScope);
 	
 	expect(self, TokenKind.Keyword, "function");
-	
-	expect(self, TokenKind.Symbol, "(");
-	local args = self:functionArgList(scope);
-	expect(self, TokenKind.Symbol, ")");
-	
-	local body = self:block(nil, false, scope);
-	expect(self, TokenKind.Keyword, "end");
-	
-	return Ast.FunctionLiteralExpression(args, body);
+
+expect(self, TokenKind.Symbol, "(");
+local args = self:functionArgList(scope);
+expect(self, TokenKind.Symbol, ")");
+
+-- optional return type annotation on function literal: ) : Type
+local returnType = nil
+if(consume(self, TokenKind.Symbol, ":")) then
+    returnType = self:parseType()
+end
+
+local body = self:block(nil, false, scope);
+expect(self, TokenKind.Keyword, "end");
+
+local node = Ast.FunctionLiteralExpression(args, body);
+if returnType then node.returnType = returnType end
+return node;
 end
 
 function Parser:functionArgList(scope)
-	local args = {};
-	if(consume(self, TokenKind.Symbol, "...")) then
-		table.insert(args, Ast.VarargExpression());
-		return args;
-	end
+    local args = {};
 
-	-- If next token is not an identifier, return empty arglist
-	if not is(self, TokenKind.Ident) then
-		return args;
-	end
+    -- vararg with optional annotation: ...: type
+    if(consume(self, TokenKind.Symbol, "...")) then
+        local varg = Ast.VarargExpression();
+        if(consume(self, TokenKind.Symbol, ":")) then
+            varg.annotation = self:parseType();
+        end
+        table.insert(args, varg);
+        return args;
+    end
 
-	-- iterate over parameters
-	while is(self, TokenKind.Ident) do
-		local ident = get(self); -- consume ident token
-		local name = ident.value;
+    if(is(self, TokenKind.Ident)) then
+        local ident = get(self);
+        local name = ident.value;
 
-		-- Optional type annotation after parameter name: `name : TypeExpr`
-		local typeAnn = nil;
-		if(consume(self, TokenKind.Symbol, ":")) then
-			-- parse the type annotation (may be complex); stops at ',' or ')'
-			typeAnn = parseTypeAnnotation(self)
-			-- store on token for downstream users
-			ident.typeAnnotation = typeAnn;
-		end
+        local id = scope:addVariable(name, ident);
+        local varExp = Ast.VariableExpression(scope, id);
 
-		local id = scope:addVariable(name, ident);
-		local varExpr = Ast.VariableExpression(scope, id);
-		-- attach same type info to AST node for later emitter/transform
-		if typeAnn then
-			varExpr.typeAnnotation = typeAnn;
-		end
-		table.insert(args, varExpr);
+        -- optional type annotation for the parameter: name : Type
+        if(consume(self, TokenKind.Symbol, ":")) then
+            varExp.annotation = self:parseType();
+        end
 
-		-- comma separated arguments
-		if not consume(self, TokenKind.Symbol, ",") then
-			break;
-		end
+        table.insert(args, varExp);
 
-		-- support trailing vararg after comma
-		if(consume(self, TokenKind.Symbol, "...")) then
-			table.insert(args, Ast.VarargExpression());
-			return args;
-		end
-	end
+        while(consume(self, TokenKind.Symbol, ",")) do
+            if(consume(self, TokenKind.Symbol, "...")) then
+                local varg2 = Ast.VarargExpression();
+                if(consume(self, TokenKind.Symbol, ":")) then
+                    varg2.annotation = self:parseType();
+                end
+                table.insert(args, varg2);
+                return args;
+            end
 
-	return args;
+            ident = get(self);
+            name = ident.value;
+
+            id = scope:addVariable(name, ident);
+            local ve = Ast.VariableExpression(scope, id);
+
+            if(consume(self, TokenKind.Symbol, ":")) then
+                ve.annotation = self:parseType();
+            end
+
+            table.insert(args, ve);
+        end
+    end
+
+    return args;
 end
 
 function Parser:expressionFunctionCall(scope, base)
