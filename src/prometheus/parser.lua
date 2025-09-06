@@ -29,6 +29,37 @@ local keys = util.keys;
 
 local TokenKind = Tokenizer.TokenKind;
 
+-- Read a type annotation until comma or closing parenthesis at depth 0.
+-- Handles nested brackets/parentheses/angles by counting depth.
+local function parseTypeAnnotation(self)
+	local parts = {}
+	local depth = 0
+	while true do
+		local tk = peek(self, 0)
+		if not tk then break end
+		-- stop when at depth 0 and see comma or closing paren
+		if depth == 0 and tk.kind == TokenKind.Symbol and (tk.source == "," or tk.source == ")") then
+			break
+		end
+
+		-- adjust depth for nesting symbols
+		if tk.kind == TokenKind.Symbol then
+			if tk.source == "(" or tk.source == "{" or tk.source == "[" or tk.source == "<" then
+				depth = depth + 1
+			elseif tk.source == ")" or tk.source == "}" or tk.source == "]" or tk.source == ">" then
+				-- consume the closing bracket into the annotation
+				depth = math.max(0, depth - 1)
+			end
+		end
+
+		-- consume token into parts
+		table.insert(parts, get(self).source)
+	end
+
+	-- join with no weird spacing rules; caller can normalize if needed
+	return table.concat(parts, " ")
+end
+
 local Parser = {};
 
 local ASSIGNMENT_NO_WARN_LOOKUP = lookupify{
@@ -273,29 +304,41 @@ function Parser:statement(scope, currentLoop)
 	end
 	
 	-- Function Declaration
-	if(consume(self, TokenKind.Keyword, "function")) then
-		-- TODO: Parse Function Declaration Name
-		local obj = self:funcName(scope);
-		local baseScope = obj.scope;
-		local baseId = obj.id;
-		local indices = obj.indices;
-		
-		local funcScope = Scope:new(scope);
-		
-		expect(self, TokenKind.Symbol, "(");
-		local args = self:functionArgList(funcScope);
-		expect(self, TokenKind.Symbol, ")");
-		
-		if(obj.passSelf) then
-			local id = funcScope:addVariable("self", obj.token);
-			table.insert(args, 1, Ast.VariableExpression(funcScope, id));
-		end
+if(consume(self, TokenKind.Keyword, "function")) then
+	-- Parse function name (may include dots and colon for method)
+	local obj = self:funcName(scope);
+	local baseScope = obj.scope;
+	local baseId = obj.id;
+	local indices = obj.indices;
 
-		local body = self:block(nil, false, funcScope);
-		expect(self, TokenKind.Keyword, "end");
-		
-		return Ast.FunctionDeclaration(baseScope, baseId, indices, args, body);
+	local funcScope = Scope:new(scope);
+
+	expect(self, TokenKind.Symbol, "(");
+	local args = self:functionArgList(funcScope);
+	expect(self, TokenKind.Symbol, ")");
+
+	-- Optional return type annotation: `) : TypeExpr`
+	local returnType = nil;
+	if(consume(self, TokenKind.Symbol, ":")) then
+		returnType = parseTypeAnnotation(self);
 	end
+
+	if(obj.passSelf) then
+		local id = funcScope:addVariable("self", obj.token);
+		table.insert(args, 1, Ast.VariableExpression(funcScope, id));
+	end
+
+	local body = self:block(nil, false, funcScope);
+	expect(self, TokenKind.Keyword, "end");
+
+	-- create node and attach returnType for emitter/obfuscator
+	local node = Ast.FunctionDeclaration(baseScope, baseId, indices, args, body);
+	if returnType then
+		node.returnType = returnType;
+	end
+
+	return node;
+end
 	
 	-- Local Function or Variable Declaration
 	if(consume(self, TokenKind.Keyword, "local")) then
@@ -755,28 +798,46 @@ function Parser:functionArgList(scope)
 		table.insert(args, Ast.VarargExpression());
 		return args;
 	end
-	
-	if(is(self, TokenKind.Ident)) then
-		local ident = get(self);
-		local name = ident.value;
-		
-		local id = scope:addVariable(name, ident);
-		table.insert(args, Ast.VariableExpression(scope, id));
-		
-		while(consume(self, TokenKind.Symbol, ",")) do
-			if(consume(self, TokenKind.Symbol, "...")) then
-				table.insert(args, Ast.VarargExpression());
-				return args;
-			end
-			
-			ident = get(self);
-			name = ident.value;
 
-			id = scope:addVariable(name, ident);
-			table.insert(args, Ast.VariableExpression(scope, id));
+	-- If next token is not an identifier, return empty arglist
+	if not is(self, TokenKind.Ident) then
+		return args;
+	end
+
+	-- iterate over parameters
+	while is(self, TokenKind.Ident) do
+		local ident = get(self); -- consume ident token
+		local name = ident.value;
+
+		-- Optional type annotation after parameter name: `name : TypeExpr`
+		local typeAnn = nil;
+		if(consume(self, TokenKind.Symbol, ":")) then
+			-- parse the type annotation (may be complex); stops at ',' or ')'
+			typeAnn = parseTypeAnnotation(self)
+			-- store on token for downstream users
+			ident.typeAnnotation = typeAnn;
+		end
+
+		local id = scope:addVariable(name, ident);
+		local varExpr = Ast.VariableExpression(scope, id);
+		-- attach same type info to AST node for later emitter/transform
+		if typeAnn then
+			varExpr.typeAnnotation = typeAnn;
+		end
+		table.insert(args, varExpr);
+
+		-- comma separated arguments
+		if not consume(self, TokenKind.Symbol, ",") then
+			break;
+		end
+
+		-- support trailing vararg after comma
+		if(consume(self, TokenKind.Symbol, "...")) then
+			table.insert(args, Ast.VarargExpression());
+			return args;
 		end
 	end
-	
+
 	return args;
 end
 
