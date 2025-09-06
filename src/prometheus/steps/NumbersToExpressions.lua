@@ -14,9 +14,9 @@ NumbersToExpressions.Description = "This Step Converts number Literals to Expres
 NumbersToExpressions.Name = "Numbers To Expressions"
 
 NumbersToExpressions.SettingsDescriptor = {
-    Treshold = {
+    Treshold = {                -- kept original name to avoid breaking callers
         type = "number",
-        default = 3,
+        default = 0.3,         -- corrected from 3 -> 0.3
         min = 0,
         max = 1,
     },
@@ -28,66 +28,107 @@ NumbersToExpressions.SettingsDescriptor = {
     }
 }
 
+local function clamp(n, lo, hi)
+    if type(n) ~= "number" then return lo end
+    if lo and n < lo then return lo end
+    if hi and n > hi then return hi end
+    return n
+end
+
 function NumbersToExpressions:init(settings)
+    settings = settings or {}
+
+    -- initialize settings with safe fallbacks and clamping
+    local sd = NumbersToExpressions.SettingsDescriptor
+    local t_default = (sd.Treshold and sd.Treshold.default) or 0.3
+    local it_default = (sd.InternalTreshold and sd.InternalTreshold.default) or 0.2
+
+    self.Treshold = clamp(settings.Treshold or t_default, sd.Treshold.min, sd.Treshold.max)
+    self.InternalTreshold = clamp(settings.InternalTreshold or it_default, sd.InternalTreshold.min, sd.InternalTreshold.max)
+
+    -- expression generators
     self.ExpressionGenerators = {
         function(val, depth) -- Multiplication
-            if type(val) ~= "number" or val == 0 then
-                return Ast.NumberExpression(val or 0)
+            local nval = tonumber(val) or 0
+            local ndept = tonumber(depth) or 0
+
+            if nval == 0 then
+                return Ast.NumberExpression(nval)
             end
+
             local max_factor = 128
             for _ = 1, 10 do
                 local factor = math.random(1, max_factor)
-                if factor ~= 0 and math.abs(val) % factor == 0 then
-                    local other = val / factor
-                    if type(other) == "number" and tonumber(tostring(factor)) * tonumber(tostring(other)) == val then
-                        return Ast.MulExpression(
-                            self:CreateNumberExpression(factor, depth),
-                            self:CreateNumberExpression(other, depth),
-                            false
-                        )
+                if factor ~= 0 then
+                    -- use math.abs on numeric value to handle negatives
+                    local abs_nval = math.abs(nval)
+                    -- ensure modulo arithmetic on numbers only
+                    if abs_nval % factor == 0 then
+                        local other = nval / factor
+                        if type(other) == "number" and tonumber(factor) and tonumber(other) and (tonumber(factor) * tonumber(other) == nval) then
+                            return Ast.MulExpression(
+                                self:CreateNumberExpression(factor, ndept),
+                                self:CreateNumberExpression(other, ndept),
+                                false
+                            )
+                        end
                     end
                 end
             end
-            return Ast.NumberExpression(val)
+
+            return Ast.NumberExpression(nval)
         end,
         function(val, depth) -- Division
-            if type(val) ~= "number" or val == 0 then
-                return Ast.NumberExpression(val or 0)
+            local nval = tonumber(val) or 0
+            local ndept = tonumber(depth) or 0
+
+            if nval == 0 then
+                return Ast.NumberExpression(nval)
             end
+
             local max_factor = 128
             for _ = 1, 10 do
                 local divisor = math.random(1, max_factor)
                 if divisor ~= 0 then
-                    local numerator = val * divisor
-                    if type(numerator) == "number" and tonumber(tostring(numerator)) / tonumber(tostring(divisor)) == val then
+                    local numerator = nval * divisor
+                    -- ensure tonumber safety for divisor/numerator
+                    local nd = tonumber(divisor)
+                    local nn = tonumber(numerator)
+                    if nn and nd and (nd ~= 0) and (nn / nd == nval) then
                         return Ast.DivExpression(
-                            self:CreateNumberExpression(numerator, depth),
-                            self:CreateNumberExpression(divisor, depth),
+                            self:CreateNumberExpression(nn, ndept),
+                            self:CreateNumberExpression(nd, ndept),
                             false
                         )
                     end
                 end
             end
-            return Ast.NumberExpression(val)
+
+            return Ast.NumberExpression(nval)
         end
     }
 end
 
 function NumbersToExpressions:CreateNumberExpression(val, depth)
-    if type(val) ~= "number" then val = 0 end
-    if (depth > 0 and math.random() >= self.InternalTreshold) or depth > 15 then
-        return Ast.NumberExpression(val)
+    local nval = tonumber(val) or 0
+    local ndept = tonumber(depth) or 0
+
+    -- use InternalTreshold safely (already set in init)
+    if (ndept > 0 and math.random() >= (self.InternalTreshold or 0)) or ndept >= 15 then
+        return Ast.NumberExpression(nval)
     end
 
     local generators = util.shuffle({unpack(self.ExpressionGenerators)})
     for _, generator in ipairs(generators) do
-        local node = generator(val, depth + 1)
-        if node then
+        -- call the generator with sanitized numbers
+        local ok, node = pcall(generator, nval, ndept + 1)
+        if ok and node then
             return node
         end
+        -- if the generator errored, swallow it and continue to other generators
     end
 
-    return Ast.NumberExpression(val)
+    return Ast.NumberExpression(nval)
 end
 
 function NumbersToExpressions:evaluateIfConstant(node)
@@ -113,12 +154,12 @@ function NumbersToExpressions:apply(ast)
     visitast(ast, nil, function(node)
         if not node then return end
         if node.kind == AstKind.NumberExpression then
-            if type(node.value) == "number" and math.random() <= self.Treshold then
+            if type(node.value) == "number" and math.random() <= (self.Treshold or 0) then
                 return self:CreateNumberExpression(node.value, 0)
             end
         elseif node.kind == AstKind.MulExpression or node.kind == AstKind.DivExpression then
             local value = self:evaluateIfConstant(node)
-            if type(value) == "number" and math.random() <= self.Treshold then
+            if type(value) == "number" and math.random() <= (self.Treshold or 0) then
                 return self:CreateNumberExpression(value, 0)
             end
         end
@@ -126,4 +167,3 @@ function NumbersToExpressions:apply(ast)
 end
 
 return NumbersToExpressions
-
