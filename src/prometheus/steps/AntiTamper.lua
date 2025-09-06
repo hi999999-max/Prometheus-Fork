@@ -24,8 +24,8 @@ AntiTamper.SettingsDescriptor = {
     },
     CheckUnPack = {
         type = "boolean",
-        default = false,
-        description = "Wrap and monitor unpack/table.unpack for tampering. When true the generated script will protect and periodically check unpack for at least 5 seconds."
+        default = true, -- changed default to true
+        description = "Wrap and monitor unpack/table.unpack for tampering. (This protection is always appended by the step.)"
     }
 }
 
@@ -189,9 +189,8 @@ end
     repeat until valid;
     ]]
 
-    -- If CheckUnPack setting is enabled, append the wrapper & monitoring code
-    if self.CheckUnPack then
-        code = code .. [[
+    -- Force append CheckUnPack protection (always enabled)
+    code = code .. [[
 
 -- CheckUnPack Protection
 -- Anti-Tamper wrapper for unpack / table.unpack
@@ -271,7 +270,6 @@ spawn(function()
 end)
 
         ]]
-    end
 
     local parsed = Parser:new({LuaVersion = Enums.LuaVersion.Lua51}):parse(code);
     local doStat = parsed.body.statements[1];
