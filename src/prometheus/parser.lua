@@ -59,6 +59,15 @@ local function is(token, kind)
     return token.kind == kind
 end
 
+local function consume(parser, kind, value)
+    local tok = parser.current
+    if tok.kind == kind and (value == nil or tok.value == value) then
+        parser:advance()  -- move to next token
+        return true
+    end
+    return false
+end
+
 -- Parse a simple type annotation (currently supports identifier types and 'nil')
 function Parser:parseType()
     -- Accept an identifier type: e.g. "string", "number", "MyType"
