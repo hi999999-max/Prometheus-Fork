@@ -33,7 +33,7 @@ local function parseTypeAnnotation(self)
     local parts = {}
     local depth = 0
     while true do
-        local tk = peek(self, 0)  -- <-- use local peek
+        local tk = peek(self, 1)  -- <-- use local peek
         if not tk then break end
         if depth == 0 and tk.kind == TokenKind.Symbol and (tk.source == "," or tk.source == ")") then
             break
