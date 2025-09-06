@@ -295,40 +295,40 @@ function Parser:statement(scope, currentLoop)
 		return Ast.IfStatement(condition, body, elseifs, elsebody);
 	end
 	
-	-- Function Declaration
 	if(consume(self, TokenKind.Keyword, "function")) then
-		-- TODO: Parse Function Declaration Name
-		local obj = self:funcName(scope);
-		local baseScope = obj.scope;
-		local baseId = obj.id;
-		local indices = obj.indices;
-		
-		local funcScope = Scope:new(scope);
-		
-		expect(self, TokenKind.Symbol, "(");
-local args = self:functionArgList(funcScope);
-expect(self, TokenKind.Symbol, ")");
+    -- TODO: Parse Function Declaration Name
+    local obj = self:funcName(scope);
+    local baseScope = obj.scope;
+    local baseId = obj.id;
+    local indices = obj.indices;
+    
+    local funcScope = Scope:new(scope);
+    
+    expect(self, TokenKind.Symbol, "(");
+    local args = self:functionArgList(funcScope);
+    expect(self, TokenKind.Symbol, ")");
 
--- optional return type annotation: ) : Type
-local returnType = nil
-if(consume(self, TokenKind.Symbol, ":")) then
-    returnType = self:parseType()
-end
+    -- optional return type annotation: ) : Type
+    local returnType = nil
+    if(consume(self, TokenKind.Symbol, ":")) then
+        returnType = self:parseType()
+    end
 
-if(obj.passSelf) then
-    local id = funcScope:addVariable("self", obj.token);
-    table.insert(args, 1, Ast.VariableExpression(funcScope, id));
-end
+    if(obj.passSelf) then
+        local id = funcScope:addVariable("self", obj.token);
+        table.insert(args, 1, Ast.VariableExpression(funcScope, id));
+    end
 
-local body = self:block(nil, false, funcScope);
-expect(self, TokenKind.Keyword, "end");
+    local body = self:block(nil, false, funcScope);
+    expect(self, TokenKind.Keyword, "end");
 
-local node = Ast.FunctionDeclaration(baseScope, baseId, indices, args, body);
-if returnType then node.returnType = returnType end
-return node;
-	
-	-- Local Function or Variable Declaration
-	if(consume(self, TokenKind.Keyword, "local")) then
+    local node = Ast.FunctionDeclaration(baseScope, baseId, indices, args, body);
+    if returnType then node.returnType = returnType end
+    return node;
+end  -- <--- Added this end
+
+-- Local Function or Variable Declaration
+if(consume(self, TokenKind.Keyword, "local")) then
 		-- Local Function Declaration
 		if(consume(self, TokenKind.Keyword, "function")) then
 			local ident = expect(self, TokenKind.Ident);
