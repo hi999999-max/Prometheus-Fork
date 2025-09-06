@@ -35,7 +35,7 @@ local function parseTypeAnnotation(self)
 	local parts = {}
 	local depth = 0
 	while true do
-		local tk = peek(self, 0)
+		local tk = self:peek(0)
 		if not tk then break end
 		-- stop when at depth 0 and see comma or closing paren
 		if depth == 0 and tk.kind == TokenKind.Symbol and (tk.source == "," or tk.source == ")") then
@@ -53,10 +53,9 @@ local function parseTypeAnnotation(self)
 		end
 
 		-- consume token into parts
-		table.insert(parts, get(self).source)
+		table.insert(parts, self:get().source)
 	end
 
-	-- join with no weird spacing rules; caller can normalize if needed
 	return table.concat(parts, " ")
 end
 
