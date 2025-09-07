@@ -5,5 +5,15 @@ return {
     Seed = 0;
     Steps = {
         { Name = "Vmify"; Settings = {}; },
+        {
+            Name = "ConstantArray";
+            Settings = {
+                Treshold = 1;
+                StringsOnly = true;
+                Shuffle = true;
+                Rotate = true;
+                LocalWrapperTreshold = 0;
+            };
+        },
     };
 }
