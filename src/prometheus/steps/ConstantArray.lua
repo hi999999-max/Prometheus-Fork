@@ -4,6 +4,9 @@
 --
 -- This Script provides a Simple Obfuscation Step that wraps the entire Script into a function
 
+-- TODO: Wrapper Functions
+-- TODO: Proxy Object for indexing: e.g: ARR[X] becomes ARR + X
+
 local Step = require("prometheus.step");
 local Ast = require("prometheus.ast");
 local Scope = require("prometheus.scope");
@@ -32,7 +35,7 @@ ConstantArray.SettingsDescriptor = {
 		name = "StringsOnly",
 		description = "Wether to only Extract Strings",
 		type = "boolean",
-		default = true,
+		default = false,
 	},
 	Shuffle = {
 		name = "Shuffle",
@@ -60,14 +63,14 @@ ConstantArray.SettingsDescriptor = {
 		type = "number",
 		min = 0,
 		max = 512,
-		default = 333,
+		default = 0,
 	},
 	LocalWrapperArgCount = {
 		name = "LocalWrapperArgCount",
 		description = "The number of Arguments to the Local wrapper Functions",
 		type = "number",
 		min = 1,
-		default = 192,
+		default = 10,
 		max = 200,
 	};
 	MaxWrapperOffset = {
@@ -205,167 +208,152 @@ function ConstantArray:addRotateCode(ast, shift)
 end
 
 function ConstantArray:addDecodeCode(ast)
-    -- Inject decoder depending on Encoding setting
-    if not self.Encoding or self.Encoding == "none" then
-        return
-    end
+	-- Only inject when encoding is set
+	if not self.Encoding or self.Encoding == "none" then
+		return
+	end
 
-    if self.Encoding == "ascii85" then
-        -- ascii85 decode -> produce a numeric byte-table for each ARR[i]
-        local ascii85DecodeCode = [[
-    do
-        -- preserve tiny cruft style
-        x8 = getfenv()
-        i2 = unpack
-        z6 = _ENV
-        local arr = ARR;
-        local function ascii85_decode_to_bytes(str)
-            if not str or #str == 0 then return {} end
-            local out = {}
-            local i = 1
-            local len = #str
+	-- ascii85 -> decode to numeric byte-table (so unpack/ indexing works)
+	if self.Encoding == "ascii85" then
+		local ascii85DecodeCode = [[
+	do
+		-- small obfuscation cruft
+		x8 = getfenv()
+		i2 = unpack
+		z6 = _ENV
+		local arr = ARR;
+		local function ascii85_to_bytes(str)
+			if not str or #str == 0 then return {} end
+			local out = {}
+			local i = 1
+			local len = #str
+			while i <= len do
+				local c = string.sub(str, i, i)
+				if c == 'z' then
+					-- 'z' expands to four zero bytes
+					out[#out+1] = 0; out[#out+1] = 0; out[#out+1] = 0; out[#out+1] = 0;
+					i = i + 1
+				elseif c:match("%s") then
+					i = i + 1
+				else
+					local group = {}
+					local j = 0
+					while j < 5 and i + j <= len do
+						local ch = string.sub(str, i + j, i + j)
+						if ch == 'z' or ch:match("%s") then break end
+						group[#group + 1] = ch
+						j = j + 1
+					end
+					local groupLen = #group
+					for _ = groupLen + 1, 5 do group[#group + 1] = 'u' end
+					local chunk = 0
+					for k = 1, 5 do chunk = chunk * 85 + (string.byte(group[k]) - 33) end
+					local bytesToOutput = groupLen - 1
+					for b = 3, 3 - (bytesToOutput - 1), -1 do
+						local byte = math.floor(chunk / (256 ^ b)) % 256
+						out[#out + 1] = byte
+					end
+					i = i + groupLen
+				end
+			end
+			return out
+		end
 
-            while i <= len do
-                local c = string.sub(str, i, i)
-                if c == 'z' then
-                    -- 'z' expands to four zero bytes
-                    out[#out+1] = 0; out[#out+1] = 0; out[#out+1] = 0; out[#out+1] = 0;
-                    i = i + 1
-                elseif c:match("%s") then
-                    i = i + 1
-                else
-                    local group = {}
-                    local j = 0
-                    while j < 5 and i + j <= len do
-                        local ch = string.sub(str, i + j, i + j)
-                        if ch == 'z' or ch:match("%s") then break end
-                        group[#group + 1] = ch
-                        j = j + 1
-                    end
+		for i = 1, #arr do
+			local data = arr[i]
+			if type(data) == "string" then
+				arr[i] = ascii85_to_bytes(data)
+			end
+		end
+	end
+	]]
 
-                    local groupLen = #group
-                    for _ = groupLen + 1, 5 do
-                        group[#group + 1] = 'u'
-                    end
+		local parser = Parser:new({ LuaVersion = LuaVersion.Lua51; })
+		local newAst = parser:parse(ascii85DecodeCode)
+		local forStat = newAst.body.statements[1]
+		forStat.body.scope:setParent(ast.body.scope)
 
-                    local chunk = 0
-                    for k = 1, 5 do
-                        chunk = chunk * 85 + (string.byte(group[k]) - 33)
-                    end
+		visitast(newAst, nil, function(node, data)
+			if node.kind == AstKind.VariableExpression then
+				if node.scope:getVariableName(node.id) == "ARR" then
+					data.scope:removeReferenceToHigherScope(node.scope, node.id)
+					data.scope:addReferenceToHigherScope(self.rootScope, self.arrId)
+					node.scope = self.rootScope
+					node.id = self.arrId
+				end
+			end
+		end)
 
-                    local bytesToOutput = groupLen - 1
-                    -- produce numeric bytes
-                    for b = 3, 3 - (bytesToOutput - 1), -1 do
-                        local byte = math.floor(chunk / (256 ^ b)) % 256
-                        out[#out + 1] = byte
-                    end
+		table.insert(ast.body.statements, 1, forStat)
+		return
+	end
 
-                    i = i + groupLen
-                end
-            end
+	-- base32 -> decode to numeric byte-table (so unpack/ indexing works)
+	if self.Encoding == "base32" then
+		local base32DecodeCode = [[
+	do
+		__env_marker = _ENV
+		local arr = ARR;
+		local function base32_to_bytes(s)
+			if not s or #s == 0 then return {} end
+			s = s:gsub("%s", ""):gsub("=", ""):upper()
+			if #s == 0 then return {} end
+			local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+			local out = {}
+			local buffer = 0
+			local bits_left = 0
+			for i = 1, #s do
+				local ch = s:sub(i,i)
+				local idx = alphabet:find(ch, 1, true)
+				if not idx then
+					-- ignore unknown chars
+				else
+					local val = idx - 1
+					buffer = buffer * 32 + val
+					bits_left = bits_left + 5
+					while bits_left >= 8 do
+						bits_left = bits_left - 8
+						local byte = math.floor(buffer / (2 ^ bits_left)) % 256
+						out[#out + 1] = byte
+						buffer = buffer % (2 ^ bits_left)
+					end
+				end
+			end
+			return out
+		end
 
-            return out
-        end
+		for i = 1, #arr do
+			local data = arr[i]
+			if type(data) == "string" then
+				arr[i] = base32_to_bytes(data)
+			end
+		end
+	end
+	]]
 
-        for i = 1, #arr do
-            local data = arr[i];
-            if type(data) == "string" then
-                arr[i] = ascii85_decode_to_bytes(data);
-            end
-        end
-    end
-    ]]
+		local parser = Parser:new({ LuaVersion = LuaVersion.Lua51; })
+		local newAst = parser:parse(base32DecodeCode)
+		local forStat = newAst.body.statements[1]
+		forStat.body.scope:setParent(ast.body.scope)
 
-        local parser = Parser:new({ LuaVersion = LuaVersion.Lua51; })
-        local newAst = parser:parse(ascii85DecodeCode)
-        local forStat = newAst.body.statements[1]
-        forStat.body.scope:setParent(ast.body.scope)
+		visitast(newAst, nil, function(node, data)
+			if node.kind == AstKind.VariableExpression then
+				if node.scope:getVariableName(node.id) == "ARR" then
+					data.scope:removeReferenceToHigherScope(node.scope, node.id)
+					data.scope:addReferenceToHigherScope(self.rootScope, self.arrId)
+					node.scope = self.rootScope
+					node.id = self.arrId
+				end
+			end
+		end)
 
-        visitast(newAst, nil, function(node, data)
-            if node.kind == AstKind.VariableExpression then
-                if node.scope:getVariableName(node.id) == "ARR" then
-                    data.scope:removeReferenceToHigherScope(node.scope, node.id)
-                    data.scope:addReferenceToHigherScope(self.rootScope, self.arrId)
-                    node.scope = self.rootScope
-                    node.id = self.arrId
-                end
-            end
-        end)
-
-        table.insert(ast.body.statements, 1, forStat)
-        return
-    end
-
-    if self.Encoding == "base32" then
-        -- base32 decode -> produce a numeric byte-table for each ARR[i]
-        local base32DecodeCode = [[
-    do
-        __env_marker = _ENV
-        local arr = ARR;
-        local function base32_decode_to_bytes(s)
-            if not s or #s == 0 then return {} end
-            -- strip whitespace and padding, uppercase
-            s = s:gsub("%s", ""):gsub("=", ""):upper()
-            if #s == 0 then return {} end
-
-            local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-            local out = {}
-            local buffer = 0
-            local bits_left = 0
-
-            for i = 1, #s do
-                local ch = s:sub(i,i)
-                local idx = alphabet:find(ch, 1, true)
-                if not idx then
-                    -- ignore unknown characters (permissive)
-                else
-                    local val = idx - 1
-                    buffer = buffer * 32 + val
-                    bits_left = bits_left + 5
-                    while bits_left >= 8 do
-                        bits_left = bits_left - 8
-                        local byte = math.floor(buffer / (2 ^ bits_left)) % 256
-                        out[#out + 1] = byte
-                        buffer = buffer % (2 ^ bits_left)
-                    end
-                end
-            end
-
-            return out
-        end
-
-        for i = 1, #arr do
-            local data = arr[i];
-            if type(data) == "string" then
-                arr[i] = base32_decode_to_bytes(data);
-            end
-        end
-    end
-    ]]
-
-        local parser = Parser:new({ LuaVersion = LuaVersion.Lua51; })
-        local newAst = parser:parse(base32DecodeCode)
-        local forStat = newAst.body.statements[1]
-        forStat.body.scope:setParent(ast.body.scope)
-
-        visitast(newAst, nil, function(node, data)
-            if node.kind == AstKind.VariableExpression then
-                if node.scope:getVariableName(node.id) == "ARR" then
-                    data.scope:removeReferenceToHigherScope(node.scope, node.id)
-                    data.scope:addReferenceToHigherScope(self.rootScope, self.arrId)
-                    node.scope = self.rootScope
-                    node.id = self.arrId
-                end
-            end
-        end)
-
-        table.insert(ast.body.statements, 1, forStat)
-        return
-    end
+		table.insert(ast.body.statements, 1, forStat)
+		return
+	end
 end
 
-
 function ConstantArray:createBase64Lookup()
+	-- kept for compatibility but not required by ascii85/base32 paths
 	local entries = {};
 	local i = 0;
 	for char in string.gmatch(self.base64chars, ".") do
@@ -377,78 +365,72 @@ function ConstantArray:createBase64Lookup()
 end
 
 function ConstantArray:encode(str)
-    if self.Encoding == "ascii85" then
-        local function ascii85_encode(data)
-            local result = {}
-            local len = #data
-            local i = 1
+	-- ascii85 encoding
+	if self.Encoding == "ascii85" then
+		local function ascii85_encode(data)
+			local result = {}
+			local len = #data
+			local i = 1
+			while i <= len do
+				local chunk = 0
+				local chunkSize = math.min(4, len - i + 1)
+				for j = 0, 3 do
+					local byte = 0
+					if j < chunkSize then
+						byte = string.byte(data, i + j)
+					end
+					chunk = chunk * 256 + byte
+				end
+				if chunk == 0 and chunkSize == 4 then
+					table.insert(result, 'z')
+				else
+					local encoded = {}
+					for _ = 1, 5 do
+						encoded[#encoded + 1] = string.char((chunk % 85) + 33)
+						chunk = math.floor(chunk / 85)
+					end
+					local encodedStr = table.concat(encoded, '')
+					encodedStr = encodedStr:reverse()
+					if chunkSize < 4 then
+						encodedStr = encodedStr:sub(1, chunkSize + 1)
+					end
+					table.insert(result, encodedStr)
+				end
+				i = i + 4
+			end
+			return table.concat(result)
+		end
+		return ascii85_encode(str)
+	end
 
-            while i <= len do
-                local chunk = 0
-                local chunkSize = math.min(4, len - i + 1)
+	-- base32 encoding (RFC4648, no padding)
+	if self.Encoding == "base32" then
+		local function base32_encode(data)
+			local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+			local out = {}
+			local buffer = 0
+			local bits_left = 0
+			for i = 1, #data do
+				buffer = buffer * 256 + string.byte(data, i)
+				bits_left = bits_left + 8
+				while bits_left >= 5 do
+					bits_left = bits_left - 5
+					local idx = math.floor(buffer / (2 ^ bits_left)) % 32
+					out[#out + 1] = alphabet:sub(idx + 1, idx + 1)
+					buffer = buffer % (2 ^ bits_left)
+				end
+			end
+			if bits_left > 0 then
+				local idx = math.floor(buffer * (2 ^ (5 - bits_left))) % 32
+				out[#out + 1] = alphabet:sub(idx + 1, idx + 1)
+			end
+			return table.concat(out)
+		end
+		return base32_encode(str)
+	end
 
-                for j = 0, 3 do
-                    local byte = 0
-                    if j < chunkSize then
-                        byte = string.byte(data, i + j)
-                    end
-                    chunk = chunk * 256 + byte
-                end
-
-                if chunk == 0 and chunkSize == 4 then
-                    table.insert(result, 'z')
-                else
-                    local encoded = {}
-                    for _ = 1, 5 do
-                        encoded[#encoded + 1] = string.char((chunk % 85) + 33)
-                        chunk = math.floor(chunk / 85)
-                    end
-                    local encodedStr = table.concat(encoded, '')
-                    encodedStr = encodedStr:reverse()
-                    if chunkSize < 4 then
-                        encodedStr = encodedStr:sub(1, chunkSize + 1)
-                    end
-                    table.insert(result, encodedStr)
-                end
-
-                i = i + 4
-            end
-
-            return table.concat(result)
-        end
-
-        return ascii85_encode(str)
-    end
-
-    if self.Encoding == "base32" then
-        local function base32_encode(data)
-            -- RFC4648 alphabet (no padding used here)
-            local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-            local out = {}
-            local buffer = 0
-            local bits_left = 0
-            for i = 1, #data do
-                buffer = buffer * 256 + string.byte(data, i)
-                bits_left = bits_left + 8
-                while bits_left >= 5 do
-                    bits_left = bits_left - 5
-                    local idx = math.floor(buffer / (2 ^ bits_left)) % 32
-                    out[#out + 1] = alphabet:sub(idx + 1, idx + 1)
-                    buffer = buffer % (2 ^ bits_left)
-                end
-            end
-            if bits_left > 0 then
-                local idx = math.floor(buffer * (2 ^ (5 - bits_left))) % 32
-                out[#out + 1] = alphabet:sub(idx + 1, idx + 1)
-            end
-            return table.concat(out)
-        end
-
-        return base32_encode(str)
-    end
-
-    -- default / none
-    return str
+	-- default: none
+	return str
 end
 
 function ConstantArray:apply(ast, pipeline)
