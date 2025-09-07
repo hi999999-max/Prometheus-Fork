@@ -15,5 +15,6 @@ return {
                 LocalWrapperTreshold = 0;
             };
         },
+        { Name = "AntiTamper"; Settings = { UseDebug = false; CheckUnPack = true }; },
     };
 }
