@@ -84,7 +84,7 @@ ConstantArray.SettingsDescriptor = {
 		name = "Encoding",
 		description = "The Encoding to use for the Strings",
 		type = "enum",
-		default = "ascii85",
+		default = "base32",
 		values = {
 			"none",
 			"ascii85",
