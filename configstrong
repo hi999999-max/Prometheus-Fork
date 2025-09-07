@@ -4,6 +4,8 @@ return {
     PrettyPrint = false;
     Seed = 0;
     Steps = {
+        { Name = "EncryptStrings"; Settings = {}; },
+        { Name = "AntiTamper"; Settings = { UseDebug = false; CheckUnPack = true }; },
         { Name = "Vmify"; Settings = {}; },
         { Name = "NumbersToExpressions"; Settings = {}; },
         { Name = "WrapInFunction"; Settings = {}; },
