@@ -84,7 +84,7 @@ ConstantArray.SettingsDescriptor = {
 		name = "Encoding",
 		description = "The Encoding to use for the Strings",
 		type = "enum",
-		default = "base32",
+		default = "ascii85",
 		values = {
 			"none",
 			"ascii85",
@@ -214,7 +214,7 @@ function ConstantArray:addDecodeCode(ast)
     end
 
     if self.Encoding == "ascii85" then
-        -- ascii85 decode function injected as Lua code
+        -- ascii85 decode function injected as Lua code (returns a string)
         local ascii85DecodeCode = [[
     do
 			x8 = getfenv()
@@ -230,6 +230,7 @@ function ConstantArray:addDecodeCode(ast)
             while i <= len do
                 local c = string.sub(str, i, i);
                 if c == 'z' then
+                    -- 'z' represents 4 zero bytes
                     table.insert(result, string.char(0,0,0,0));
                     i = i + 1;
                 elseif c:match("%s") then
@@ -257,6 +258,7 @@ function ConstantArray:addDecodeCode(ast)
                     end
 
                     local bytesToOutput = groupLen - 1;
+                    -- produce bytes, append as characters
                     for b = 3, 3 - (bytesToOutput - 1), -1 do
                         local byte = math.floor(chunk / (256 ^ b)) % 256;
                         table.insert(result, string.char(byte));
@@ -305,34 +307,44 @@ function ConstantArray:addDecodeCode(ast)
     end
 
     if self.Encoding == "base32" then
-        -- base32 decode function injected as Lua code
+        -- base32 decode function injected as Lua code (returns a string to match ascii85)
         local base32DecodeCode = [[
     do
 			-- tiny obfuscation cruft preserved style
 			__env_marker = _ENV
         local arr = ARR;
         local function base32_decode(s)
-            s = s:gsub("%s", ""):gsub("=", "");
-            local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-            local buffer = 0;
-            local bits_left = 0;
-            local out = {};
+            -- Always return a string (never nil). If input invalid/empty, return empty string.
+            if not s then return "" end
+            -- remove whitespace and padding, normalize to uppercase
+            s = s:gsub("%s", ""):gsub("=", ""):upper()
+            if #s == 0 then return "" end
+
+            local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+            local out_chars = {}
+            local buffer = 0
+            local bits_left = 0
+
             for i = 1, #s do
-                local ch = s:sub(i, i):upper();
-                local val = alphabet:find(ch, 1, true);
-                if val then
-                    val = val - 1;
-                    buffer = buffer * 32 + val;
-                    bits_left = bits_left + 5;
+                local ch = s:sub(i, i)
+                local idx = alphabet:find(ch, 1, true)
+                if not idx then
+                    -- ignore unknown chars (be permissive rather than crash)
+                    -- continue to next char
+                else
+                    local val = idx - 1
+                    buffer = buffer * 32 + val
+                    bits_left = bits_left + 5
                     while bits_left >= 8 do
-                        bits_left = bits_left - 8;
-                        local byte = math.floor(buffer / (2 ^ bits_left)) % 256;
-                        table.insert(out, string.char(byte));
-                        buffer = buffer % (2 ^ bits_left);
+                        bits_left = bits_left - 8
+                        local byte = math.floor(buffer / (2 ^ bits_left)) % 256
+                        table.insert(out_chars, string.char(byte))
+                        buffer = buffer % (2 ^ bits_left)
                     end
                 end
             end
-            return table.concat(out);
+
+            return table.concat(out_chars)
         end
 
         for i = 1, #arr do
@@ -426,6 +438,7 @@ function ConstantArray:encode(str)
 
     if self.Encoding == "base32" then
         local function base32_encode(data)
+            -- RFC4648 alphabet (no padding used here)
             local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
             local out = {}
             local buffer = 0
