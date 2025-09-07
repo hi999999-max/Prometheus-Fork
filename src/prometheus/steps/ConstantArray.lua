@@ -1,4 +1,4 @@
- -- This Script is Part of the Prometheus Obfuscator by Levno_710
+-- This Script is Part of the Prometheus Obfuscator by Levno_710
 --
 -- ConstantArray.lua
 --
@@ -88,6 +88,7 @@ ConstantArray.SettingsDescriptor = {
 		values = {
 			"none",
 			"ascii85",
+			"base32",
 		},
 	}
 }
@@ -207,8 +208,14 @@ function ConstantArray:addRotateCode(ast, shift)
 end
 
 function ConstantArray:addDecodeCode(ast)
-    -- ascii85 decode function injected as Lua code
-    local ascii85DecodeCode = [[
+    -- Inject decoder depending on Encoding setting
+    if not self.Encoding or self.Encoding == "none" then
+        return
+    end
+
+    if self.Encoding == "ascii85" then
+        -- ascii85 decode function injected as Lua code
+        local ascii85DecodeCode = [[
     do
 			x8 = getfenv()
 			i2 = unpack
@@ -274,26 +281,91 @@ function ConstantArray:addDecodeCode(ast)
     end
     ]]
 
-    local parser = Parser:new({
-        LuaVersion = LuaVersion.Lua51;
-    })
+        local parser = Parser:new({
+            LuaVersion = LuaVersion.Lua51;
+        })
 
-    local newAst = parser:parse(ascii85DecodeCode)
-    local forStat = newAst.body.statements[1]
-    forStat.body.scope:setParent(ast.body.scope)
+        local newAst = parser:parse(ascii85DecodeCode)
+        local forStat = newAst.body.statements[1]
+        forStat.body.scope:setParent(ast.body.scope)
 
-    visitast(newAst, nil, function(node, data)
-        if node.kind == AstKind.VariableExpression then
-            if node.scope:getVariableName(node.id) == "ARR" then
-                data.scope:removeReferenceToHigherScope(node.scope, node.id)
-                data.scope:addReferenceToHigherScope(self.rootScope, self.arrId)
-                node.scope = self.rootScope
-                node.id = self.arrId
+        visitast(newAst, nil, function(node, data)
+            if node.kind == AstKind.VariableExpression then
+                if node.scope:getVariableName(node.id) == "ARR" then
+                    data.scope:removeReferenceToHigherScope(node.scope, node.id)
+                    data.scope:addReferenceToHigherScope(self.rootScope, self.arrId)
+                    node.scope = self.rootScope
+                    node.id = self.arrId
+                end
+            end
+        end)
+
+        table.insert(ast.body.statements, 1, forStat)
+        return
+    end
+
+    if self.Encoding == "base32" then
+        -- base32 decode function injected as Lua code
+        local base32DecodeCode = [[
+    do
+			-- tiny obfuscation cruft preserved style
+			__env_marker = _ENV
+        local arr = ARR;
+        local function base32_decode(s)
+            s = s:gsub("%s", ""):gsub("=", "");
+            local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+            local buffer = 0;
+            local bits_left = 0;
+            local out = {};
+            for i = 1, #s do
+                local ch = s:sub(i, i):upper();
+                local val = alphabet:find(ch, 1, true);
+                if val then
+                    val = val - 1;
+                    buffer = buffer * 32 + val;
+                    bits_left = bits_left + 5;
+                    while bits_left >= 8 do
+                        bits_left = bits_left - 8;
+                        local byte = math.floor(buffer / (2 ^ bits_left)) % 256;
+                        table.insert(out, string.char(byte));
+                        buffer = buffer % (2 ^ bits_left);
+                    end
+                end
+            end
+            return table.concat(out);
+        end
+
+        for i = 1, #arr do
+            local data = arr[i];
+            if type(data) == "string" then
+                arr[i] = base32_decode(data);
             end
         end
-    end)
+    end
+    ]]
 
-    table.insert(ast.body.statements, 1, forStat)
+        local parser = Parser:new({
+            LuaVersion = LuaVersion.Lua51;
+        })
+
+        local newAst = parser:parse(base32DecodeCode)
+        local forStat = newAst.body.statements[1]
+        forStat.body.scope:setParent(ast.body.scope)
+
+        visitast(newAst, nil, function(node, data)
+            if node.kind == AstKind.VariableExpression then
+                if node.scope:getVariableName(node.id) == "ARR" then
+                    data.scope:removeReferenceToHigherScope(node.scope, node.id)
+                    data.scope:addReferenceToHigherScope(self.rootScope, self.arrId)
+                    node.scope = self.rootScope
+                    node.id = self.arrId
+                end
+            end
+        end)
+
+        table.insert(ast.body.statements, 1, forStat)
+        return
+    end
 end
 
 
@@ -351,6 +423,35 @@ function ConstantArray:encode(str)
 
         return ascii85_encode(str)
     end
+
+    if self.Encoding == "base32" then
+        local function base32_encode(data)
+            local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+            local out = {}
+            local buffer = 0
+            local bits_left = 0
+            for i = 1, #data do
+                buffer = buffer * 256 + string.byte(data, i)
+                bits_left = bits_left + 8
+                while bits_left >= 5 do
+                    bits_left = bits_left - 5
+                    local idx = math.floor(buffer / (2 ^ bits_left)) % 32
+                    out[#out + 1] = alphabet:sub(idx + 1, idx + 1)
+                    buffer = buffer % (2 ^ bits_left)
+                end
+            end
+            if bits_left > 0 then
+                local idx = math.floor(buffer * (2 ^ (5 - bits_left))) % 32
+                out[#out + 1] = alphabet:sub(idx + 1, idx + 1)
+            end
+            return table.concat(out)
+        end
+
+        return base32_encode(str)
+    end
+
+    -- default / none
+    return str
 end
 
 function ConstantArray:apply(ast, pipeline)
