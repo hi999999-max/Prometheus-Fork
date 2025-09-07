@@ -4,9 +4,6 @@
 --
 -- This Script provides a Simple Obfuscation Step that wraps the entire Script into a function
 
--- TODO: Wrapper Functions
--- TODO: Proxy Object for indexing: e.g: ARR[X] becomes ARR + X
-
 local Step = require("prometheus.step");
 local Ast = require("prometheus.ast");
 local Scope = require("prometheus.scope");
@@ -84,7 +81,7 @@ ConstantArray.SettingsDescriptor = {
 		name = "Encoding",
 		description = "The Encoding to use for the Strings",
 		type = "enum",
-		default = "base32",
+		default = "ascii85",
 		values = {
 			"none",
 			"ascii85",
@@ -214,79 +211,72 @@ function ConstantArray:addDecodeCode(ast)
     end
 
     if self.Encoding == "ascii85" then
-        -- ascii85 decode function injected as Lua code (returns a string)
+        -- ascii85 decode -> produce a numeric byte-table for each ARR[i]
         local ascii85DecodeCode = [[
     do
-			x8 = getfenv()
-			i2 = unpack
-			z6 = _ENV
+        -- preserve tiny cruft style
+        x8 = getfenv()
+        i2 = unpack
+        z6 = _ENV
         local arr = ARR;
-        local result = {};
-        local function ascii85_decode(str)
-            local result = {};
-            local i = 1;
-            local len = #str;
+        local function ascii85_decode_to_bytes(str)
+            if not str or #str == 0 then return {} end
+            local out = {}
+            local i = 1
+            local len = #str
 
             while i <= len do
-                local c = string.sub(str, i, i);
+                local c = string.sub(str, i, i)
                 if c == 'z' then
-                    -- 'z' represents 4 zero bytes
-                    table.insert(result, string.char(0,0,0,0));
-                    i = i + 1;
+                    -- 'z' expands to four zero bytes
+                    out[#out+1] = 0; out[#out+1] = 0; out[#out+1] = 0; out[#out+1] = 0;
+                    i = i + 1
                 elseif c:match("%s") then
-                    i = i + 1;
+                    i = i + 1
                 else
-                    local group = {};
-                    local j = 0;
+                    local group = {}
+                    local j = 0
                     while j < 5 and i + j <= len do
-                        local ch = string.sub(str, i + j, i + j);
-                        if ch == 'z' or ch == ' ' or ch == '\n' or ch == '\r' then
-                            break;
-                        end
-                        group[#group + 1] = ch;
-                        j = j + 1;
+                        local ch = string.sub(str, i + j, i + j)
+                        if ch == 'z' or ch:match("%s") then break end
+                        group[#group + 1] = ch
+                        j = j + 1
                     end
 
-                    local groupLen = #group;
+                    local groupLen = #group
                     for _ = groupLen + 1, 5 do
-                        group[#group + 1] = 'u';
+                        group[#group + 1] = 'u'
                     end
 
-                    local chunk = 0;
+                    local chunk = 0
                     for k = 1, 5 do
-                        chunk = chunk * 85 + (string.byte(group[k]) - 33);
+                        chunk = chunk * 85 + (string.byte(group[k]) - 33)
                     end
 
-                    local bytesToOutput = groupLen - 1;
-                    -- produce bytes, append as characters
+                    local bytesToOutput = groupLen - 1
+                    -- produce numeric bytes
                     for b = 3, 3 - (bytesToOutput - 1), -1 do
-                        local byte = math.floor(chunk / (256 ^ b)) % 256;
-                        table.insert(result, string.char(byte));
+                        local byte = math.floor(chunk / (256 ^ b)) % 256
+                        out[#out + 1] = byte
                     end
 
-                    i = i + groupLen;
+                    i = i + groupLen
                 end
             end
-	c9 = newproxy
-    y1 = setmetatable
-            return table.concat(result);
+
+            return out
         end
-    z9 = getmetatable
-	j8 = select
-	t7 = getfenv
+
         for i = 1, #arr do
             local data = arr[i];
             if type(data) == "string" then
-                arr[i] = ascii85_decode(data);
+                arr[i] = ascii85_decode_to_bytes(data);
             end
         end
     end
     ]]
 
-        local parser = Parser:new({
-            LuaVersion = LuaVersion.Lua51;
-        })
-
+        local parser = Parser:new({ LuaVersion = LuaVersion.Lua51; })
         local newAst = parser:parse(ascii85DecodeCode)
         local forStat = newAst.body.statements[1]
         forStat.body.scope:setParent(ast.body.scope)
@@ -307,30 +297,27 @@ function ConstantArray:addDecodeCode(ast)
     end
 
     if self.Encoding == "base32" then
-        -- base32 decode function injected as Lua code (returns a string to match ascii85)
+        -- base32 decode -> produce a numeric byte-table for each ARR[i]
         local base32DecodeCode = [[
     do
-			-- tiny obfuscation cruft preserved style
-			__env_marker = _ENV
+        __env_marker = _ENV
         local arr = ARR;
-        local function base32_decode(s)
-            -- Always return a string (never nil). If input invalid/empty, return empty string.
-            if not s then return "" end
-            -- remove whitespace and padding, normalize to uppercase
+        local function base32_decode_to_bytes(s)
+            if not s or #s == 0 then return {} end
+            -- strip whitespace and padding, uppercase
             s = s:gsub("%s", ""):gsub("=", ""):upper()
-            if #s == 0 then return "" end
+            if #s == 0 then return {} end
 
             local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
-            local out_chars = {}
+            local out = {}
             local buffer = 0
             local bits_left = 0
 
             for i = 1, #s do
-                local ch = s:sub(i, i)
+                local ch = s:sub(i,i)
                 local idx = alphabet:find(ch, 1, true)
                 if not idx then
-                    -- ignore unknown chars (be permissive rather than crash)
-                    -- continue to next char
+                    -- ignore unknown characters (permissive)
                 else
                     local val = idx - 1
                     buffer = buffer * 32 + val
@@ -338,28 +325,25 @@ function ConstantArray:addDecodeCode(ast)
                     while bits_left >= 8 do
                         bits_left = bits_left - 8
                         local byte = math.floor(buffer / (2 ^ bits_left)) % 256
-                        table.insert(out_chars, string.char(byte))
+                        out[#out + 1] = byte
                         buffer = buffer % (2 ^ bits_left)
                     end
                 end
             end
 
-            return table.concat(out_chars)
+            return out
         end
 
         for i = 1, #arr do
             local data = arr[i];
             if type(data) == "string" then
-                arr[i] = base32_decode(data);
+                arr[i] = base32_decode_to_bytes(data);
             end
         end
     end
     ]]
 
-        local parser = Parser:new({
-            LuaVersion = LuaVersion.Lua51;
-        })
-
+        local parser = Parser:new({ LuaVersion = LuaVersion.Lua51; })
         local newAst = parser:parse(base32DecodeCode)
         local forStat = newAst.body.statements[1]
         forStat.body.scope:setParent(ast.body.scope)
