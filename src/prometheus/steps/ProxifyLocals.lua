@@ -1,313 +1,493 @@
 -- This Script is Part of the Prometheus Obfuscator by Levno_710
 --
--- ProxifyLocals.lua
+-- ConstantArray.lua (Modified: ascii85 -> R2 Encryption)
 --
--- This Script provides a Obfuscation Step for putting all Locals into Proxy Objects
 
 local Step = require("prometheus.step");
 local Ast = require("prometheus.ast");
 local Scope = require("prometheus.scope");
 local visitast = require("prometheus.visitast");
-local RandomLiterals = require("prometheus.randomLiterals")
+local util     = require("prometheus.util")
+local Parser   = require("prometheus.parser");
+local enums = require("prometheus.enums")
 
+local LuaVersion = enums.LuaVersion;
 local AstKind = Ast.AstKind;
 
-local ProifyLocals = Step:extend();
-ProifyLocals.Description = "This Step wraps all locals into Proxy Objects";
-ProifyLocals.Name = "Proxify Locals";
-
-ProifyLocals.SettingsDescriptor = {
-	LiteralType = {
-		name = "LiteralType",
-		description = "The type of the randomly generated literals",
-		type = "enum",
-		values = {
-			"dictionary",
-			"number",
-			"string",
-            "any",
-		},
-		default = "string",
-	},
-}
-
-local function shallowcopy(orig)
-    local orig_type = type(orig)
-    local copy
-    if orig_type == 'table' then
-        copy = {}
-        for orig_key, orig_value in pairs(orig) do
-            copy[orig_key] = orig_value
+----------------------------------------------------------------------
+-- Bitwise fallback for Lua versions lacking bit32
+----------------------------------------------------------------------
+if not bit32 then
+    bit32 = {}
+    function bit32.bxor(a, b)
+        local res, bitval = 0, 1
+        while a > 0 or b > 0 do
+            local abit, bbit = a % 2, b % 2
+            if abit ~= bbit then
+                res = res + bitval
+            end
+            a = math.floor(a/2)
+            b = math.floor(b/2)
+            bitval = bitval * 2
         end
-    else -- number, string, boolean, etc
-        copy = orig
+        return res
     end
-    return copy
 end
 
-local function callNameGenerator(generatorFunction, ...)
-	if(type(generatorFunction) == "table") then
-		generatorFunction = generatorFunction.generateName;
-	end
-	return generatorFunction(...);
-end
+----------------------------------------------------------------------
+-- ConstantArray Step
+----------------------------------------------------------------------
 
-local MetatableExpressions = {
-    {
-        constructor = Ast.AddExpression,
-        key = "__add";
+local ConstantArray = Step:extend();
+ConstantArray.Description = "This Step will Extract all Constants and put them into an Array at the beginning of the script";
+ConstantArray.Name = "Constant Array";
+
+ConstantArray.SettingsDescriptor = {
+    Treshold = {
+        name = "Treshold",
+        description = "The relative amount of nodes that will be affected",
+        type = "number",
+        default = 1,
+        min = 0,
+        max = 1,
     },
-    {
-        constructor = Ast.SubExpression,
-        key = "__sub";
+    StringsOnly = {
+        name = "StringsOnly",
+        description = "Wether to only Extract Strings",
+        type = "boolean",
+        default = true,
     },
-    {
-        constructor = Ast.IndexExpression,
-        key = "__index";
+    Shuffle = {
+        name = "Shuffle",
+        description = "Wether to shuffle the order of Elements in the Array",
+        type = "boolean",
+        default = true,
     },
-    {
-        constructor = Ast.MulExpression,
-        key = "__mul";
+    Rotate = {
+        name = "Rotate",
+        description = "Wether to rotate the String Array by a specific (random) amount. This will be undone on runtime.",
+        type = "boolean",
+        default = true,
     },
-    {
-        constructor = Ast.DivExpression,
-        key = "__div";
+    LocalWrapperTreshold = {
+        name = "LocalWrapperTreshold",
+        description = "The relative amount of nodes functions, that will get local wrappers",
+        type = "number",
+        default = 1,
+        min = 0,
+        max = 1,
     },
-    {
-        constructor = Ast.PowExpression,
-        key = "__pow";
+    LocalWrapperCount = {
+        name = "LocalWrapperCount",
+        description = "The number of Local wrapper Functions per scope. This only applies if LocalWrapperTreshold is greater than 0",
+        type = "number",
+        min = 0,
+        max = 512,
+        default = 333,
     },
-    {
-        constructor = Ast.StrCatExpression,
-        key = "__concat";
+    LocalWrapperArgCount = {
+        name = "LocalWrapperArgCount",
+        description = "The number of Arguments to the Local wrapper Functions",
+        type = "number",
+        min = 1,
+        default = 192,
+        max = 200,
+    };
+    MaxWrapperOffset = {
+        name = "MaxWrapperOffset",
+        description = "The Max Offset for the Wrapper Functions",
+        type = "number",
+        min = 0,
+        default = 65535,
+    };
+    Encoding = {
+        name = "Encoding",
+        description = "The Encoding to use for the Strings",
+        type = "enum",
+        default = "r2",
+        values = {
+            "none",
+            "ascii85",
+            "r2",
+        },
     }
 }
 
-function ProifyLocals:init(settings)
-	
-end
-
-local function generateLocalMetatableInfo(pipeline)
-    local usedOps = {};
-    local info = {};
-    for i, v in ipairs({"setValue","getValue", "index"}) do
-        local rop;
-        repeat
-            rop = MetatableExpressions[math.random(#MetatableExpressions)];
-        until not usedOps[rop];
-        usedOps[rop] = true;
-        info[v] = rop;
+local function callNameGenerator(generatorFunction, ...)
+    if(type(generatorFunction) == "table") then
+        generatorFunction = generatorFunction.generateName;
     end
-
-    info.valueName = callNameGenerator(pipeline.namegenerator, math.random(1, 4096));
-
-    return info;
+    return generatorFunction(...);
 end
 
-function ProifyLocals:CreateAssignmentExpression(info, expr, parentScope)
-    local metatableVals = {};
+function ConstantArray:init(settings)
+end
 
-    -- Setvalue Entry
-    local setValueFunctionScope = Scope:new(parentScope);
-    local setValueSelf = setValueFunctionScope:addVariable();
-    local setValueArg = setValueFunctionScope:addVariable();
-    local setvalueFunctionLiteral = Ast.FunctionLiteralExpression(
-        {
-            Ast.VariableExpression(setValueFunctionScope, setValueSelf), -- Argument 1
-            Ast.VariableExpression(setValueFunctionScope, setValueArg), -- Argument 2
-        },
-        Ast.Block({ -- Create Function Body
-            Ast.AssignmentStatement({
-                Ast.AssignmentIndexing(Ast.VariableExpression(setValueFunctionScope, setValueSelf), Ast.StringExpression(info.valueName));
-            }, {
-                Ast.VariableExpression(setValueFunctionScope, setValueArg)
-            })
-        }, setValueFunctionScope)
-    );
-    table.insert(metatableVals, Ast.KeyedTableEntry(Ast.StringExpression(info.setValue.key), setvalueFunctionLiteral));
+----------------------------------------------------------------------
+-- Array construction
+----------------------------------------------------------------------
 
-    -- Getvalue Entry
-    local getValueFunctionScope = Scope:new(parentScope);
-    local getValueSelf = getValueFunctionScope:addVariable();
-    local getValueArg = getValueFunctionScope:addVariable();
-    local getValueIdxExpr;
-    if(info.getValue.key == "__index" or info.setValue.key == "__index") then
-        getValueIdxExpr = Ast.FunctionCallExpression(Ast.VariableExpression(getValueFunctionScope:resolveGlobal("rawget")), {
-            Ast.VariableExpression(getValueFunctionScope, getValueSelf),
-            Ast.StringExpression(info.valueName),
-        });
+function ConstantArray:createArray()
+    local entries = {};
+    for i, v in ipairs(self.constants) do
+        if type(v) == "string" then
+            v = self:encode(v);
+        end
+        entries[i] = Ast.TableEntry(Ast.ConstantNode(v));
+    end
+    return Ast.TableConstructorExpression(entries);
+end
+
+----------------------------------------------------------------------
+-- Indexing through wrappers (kept same from original)
+----------------------------------------------------------------------
+
+function ConstantArray:indexing(index, data)
+    if self.LocalWrapperCount > 0 and data.functionData.local_wrappers then
+        local wrappers = data.functionData.local_wrappers;
+        local wrapper = wrappers[math.random(#wrappers)];
+
+        local args = {};
+        local ofs = index - self.wrapperOffset - wrapper.offset;
+        for i = 1, self.LocalWrapperArgCount, 1 do
+            if i == wrapper.arg then
+                args[i] = Ast.NumberExpression(ofs);
+            else
+                args[i] = Ast.NumberExpression(math.random(ofs - 1024, ofs + 1024));
+            end
+        end
+
+        data.scope:addReferenceToHigherScope(wrappers.scope, wrappers.id);
+        return Ast.FunctionCallExpression(Ast.IndexExpression(
+            Ast.VariableExpression(wrappers.scope, wrappers.id),
+            Ast.StringExpression(wrapper.index)
+        ), args);
     else
-        getValueIdxExpr = Ast.IndexExpression(Ast.VariableExpression(getValueFunctionScope, getValueSelf), Ast.StringExpression(info.valueName));
+        data.scope:addReferenceToHigherScope(self.rootScope,  self.wrapperId);
+        return Ast.FunctionCallExpression(Ast.VariableExpression(self.rootScope, self.wrapperId), {
+            Ast.NumberExpression(index - self.wrapperOffset);
+        });
     end
-    local getvalueFunctionLiteral = Ast.FunctionLiteralExpression(
-        {
-            Ast.VariableExpression(getValueFunctionScope, getValueSelf), -- Argument 1
-            Ast.VariableExpression(getValueFunctionScope, getValueArg), -- Argument 2
-        },
-        Ast.Block({ -- Create Function Body
-            Ast.ReturnStatement({
-                getValueIdxExpr;
-            });
-        }, getValueFunctionScope)
-    );
-    table.insert(metatableVals, Ast.KeyedTableEntry(Ast.StringExpression(info.getValue.key), getvalueFunctionLiteral));
-
-    parentScope:addReferenceToHigherScope(self.setMetatableVarScope, self.setMetatableVarId);
-    return Ast.FunctionCallExpression(
-        Ast.VariableExpression(self.setMetatableVarScope, self.setMetatableVarId),
-        {
-            Ast.TableConstructorExpression({
-                Ast.KeyedTableEntry(Ast.StringExpression(info.valueName), expr)
-            }),
-            Ast.TableConstructorExpression(metatableVals)
-        }
-    );
 end
 
-function ProifyLocals:apply(ast, pipeline)
-    local localMetatableInfos = {};
-    local function getLocalMetatableInfo(scope, id)
-        -- Global Variables should not be transformed
-        if(scope.isGlobal) then return nil end;
-
-        localMetatableInfos[scope] = localMetatableInfos[scope] or {};
-        if localMetatableInfos[scope][id] then
-            -- If locked, return no Metatable
-            if localMetatableInfos[scope][id].locked then
-                return nil
-            end
-            return localMetatableInfos[scope][id];
-        end
-        local localMetatableInfo = generateLocalMetatableInfo(pipeline);
-        localMetatableInfos[scope][id] = localMetatableInfo;
-        return localMetatableInfo;
+function ConstantArray:getConstant(value, data)
+    if(self.lookup[value]) then
+        return self:indexing(self.lookup[value], data)
     end
+    local idx = #self.constants + 1;
+    self.constants[idx] = value;
+    self.lookup[value] = idx;
+    return self:indexing(idx, data);
+end
 
-    local function disableMetatableInfo(scope, id)
-        -- Global Variables should not be transformed
-        if(scope.isGlobal) then return nil end;
-
-        localMetatableInfos[scope] = localMetatableInfos[scope] or {};
-        localMetatableInfos[scope][id] = {locked = true}
+function ConstantArray:addConstant(value)
+    if(self.lookup[value]) then
+        return
     end
+    local idx = #self.constants + 1;
+    self.constants[idx] = value;
+    self.lookup[value] = idx;
+end
 
-    -- Create Setmetatable Variable
-    self.setMetatableVarScope = ast.body.scope;
-    self.setMetatableVarId    = ast.body.scope:addVariable();
+----------------------------------------------------------------------
+-- Rotate helpers
+----------------------------------------------------------------------
 
-    -- Create Empty Function Variable
-    self.emptyFunctionScope   = ast.body.scope;
-    self.emptyFunctionId      = ast.body.scope:addVariable();
-    self.emptyFunctionUsed    = false;
+local function reverse(t, i, j)
+    while i < j do
+      t[i], t[j] = t[j], t[i]
+      i, j = i+1, j-1
+    end
+end
+  
+local function rotate(t, d, n)
+    n = n or #t
+    d = (d or 1) % n
+    reverse(t, 1, n)
+    reverse(t, 1, d)
+    reverse(t, d+1, n)
+end
 
-    -- Add Empty Function Declaration
-    table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(self.emptyFunctionScope, {self.emptyFunctionId}, {
-        Ast.FunctionLiteralExpression({}, Ast.Block({}, Scope:new(ast.body.scope)));
-    }));
-
-
-    visitast(ast, function(node, data)
-        -- Lock for loop variables
-        if(node.kind == AstKind.ForStatement) then
-            disableMetatableInfo(node.scope, node.id)
+local rotateCode = [=[
+    for i, v in ipairs({{1, LEN}, {1, SHIFT}, {SHIFT + 1, LEN}}) do
+        while v[1] < v[2] do
+            ARR[v[1]], ARR[v[2]], v[1], v[2] = ARR[v[2]], ARR[v[1]], v[1] + 1, v[2] - 1
         end
-        if(node.kind == AstKind.ForInStatement) then
-            for i, id in ipairs(node.ids) do
-                disableMetatableInfo(node.scope, id);
-            end
-        end
+    end
+]=];
 
-        -- Lock Function Arguments
-        if(node.kind == AstKind.FunctionDeclaration or node.kind == AstKind.LocalFunctionDeclaration or node.kind == AstKind.FunctionLiteralExpression) then
-            for i, expr in ipairs(node.args) do
-                if expr.kind == AstKind.VariableExpression then
-                    disableMetatableInfo(expr.scope, expr.id);
-                end
-            end
-        end
+----------------------------------------------------------------------
+-- Add Rotate Code
+----------------------------------------------------------------------
 
-        -- Assignment Statements may be Obfuscated Differently
-        if(node.kind == AstKind.AssignmentStatement) then
-            if(#node.lhs == 1 and node.lhs[1].kind == AstKind.AssignmentVariable) then
-                local variable = node.lhs[1];
-                local localMetatableInfo = getLocalMetatableInfo(variable.scope, variable.id);
-                if localMetatableInfo then
-                    local args = shallowcopy(node.rhs);
-                    local vexp = Ast.VariableExpression(variable.scope, variable.id);
-                    vexp.__ignoreProxifyLocals = true;
-                    args[1] = localMetatableInfo.setValue.constructor(vexp, args[1]);
-                    self.emptyFunctionUsed = true;
-                    data.scope:addReferenceToHigherScope(self.emptyFunctionScope, self.emptyFunctionId);
-                    return Ast.FunctionCallStatement(Ast.VariableExpression(self.emptyFunctionScope, self.emptyFunctionId), args);
-                end
-            end
-        end
-    end, function(node, data)
-        -- Local Variable Declaration
-        if(node.kind == AstKind.LocalVariableDeclaration) then
-            for i, id in ipairs(node.ids) do
-                local expr = node.expressions[i] or Ast.NilExpression();
-                local localMetatableInfo = getLocalMetatableInfo(node.scope, id);
-                -- Apply Only to Some Variables if Treshold is non 1
-                if localMetatableInfo then
-                    local newExpr = self:CreateAssignmentExpression(localMetatableInfo, expr, node.scope);
-                    node.expressions[i] = newExpr;
-                end
-            end
-        end
+function ConstantArray:addRotateCode(ast, shift)
+    local parser = Parser:new({
+        LuaVersion = LuaVersion.Lua51;
+    });
 
-        -- Variable Expression
-        if(node.kind == AstKind.VariableExpression and not node.__ignoreProxifyLocals) then
-            local localMetatableInfo = getLocalMetatableInfo(node.scope, node.id);
-            -- Apply Only to Some Variables if Treshold is non 1
-            if localMetatableInfo then
-                local literal;
-                if self.LiteralType == "dictionary" then
-                    literal = RandomLiterals.Dictionary();
-                elseif self.LiteralType == "number" then
-                    literal = RandomLiterals.Number();
-                elseif self.LiteralType == "string" then
-                    literal = RandomLiterals.String(pipeline);
-                else
-                    literal = RandomLiterals.Any(pipeline);
-                end
-                return localMetatableInfo.getValue.constructor(node, literal);
-            end
-        end
-
-        -- Assignment Variable for Assignment Statement
-        if(node.kind == AstKind.AssignmentVariable) then
-            local localMetatableInfo = getLocalMetatableInfo(node.scope, node.id);
-            -- Apply Only to Some Variables if Treshold is non 1
-            if localMetatableInfo then
-                return Ast.AssignmentIndexing(node, Ast.StringExpression(localMetatableInfo.valueName));
-            end
-        end
-
-        -- Local Function Declaration
-        if(node.kind == AstKind.LocalFunctionDeclaration) then
-            local localMetatableInfo = getLocalMetatableInfo(node.scope, node.id);
-            -- Apply Only to Some Variables if Treshold is non 1
-            if localMetatableInfo then
-                local funcLiteral = Ast.FunctionLiteralExpression(node.args, node.body);
-                local newExpr = self:CreateAssignmentExpression(localMetatableInfo, funcLiteral, node.scope);
-                return Ast.LocalVariableDeclaration(node.scope, {node.id}, {newExpr});
-            end
-        end
-
-        -- Function Declaration
-        if(node.kind == AstKind.FunctionDeclaration) then
-            local localMetatableInfo = getLocalMetatableInfo(node.scope, node.id);
-            if(localMetatableInfo) then
-                table.insert(node.indices, 1, localMetatableInfo.valueName);
+    local newAst = parser:parse(string.gsub(string.gsub(rotateCode, "SHIFT", tostring(shift)), "LEN", tostring(#self.constants)));
+    local forStat = newAst.body.statements[1];
+    forStat.body.scope:setParent(ast.body.scope);
+    visitast(newAst, nil, function(node, data)
+        if(node.kind == AstKind.VariableExpression) then
+            if(node.scope:getVariableName(node.id) == "ARR") then
+                data.scope:removeReferenceToHigherScope(node.scope, node.id);
+                data.scope:addReferenceToHigherScope(self.rootScope, self.arrId);
+                node.scope = self.rootScope;
+                node.id    = self.arrId;
             end
         end
     end)
 
-    -- Add Setmetatable Variable Declaration
-    table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(self.setMetatableVarScope, {self.setMetatableVarId}, {
-        Ast.VariableExpression(self.setMetatableVarScope:resolveGlobal("setmetatable"))
-    }));
+    table.insert(ast.body.statements, 1, forStat);
 end
 
-return ProifyLocals;
+----------------------------------------------------------------------
+-- R2 Encode
+----------------------------------------------------------------------
+
+function ConstantArray:encode(str)
+    if self.Encoding == "r2" then
+        local key = self.EncryptionKey or 42
+        local result = {}
+        for i = 1, #str do
+            local byte = string.byte(str, i)
+            table.insert(result, string.char(bit32.bxor(byte, key)))
+        end
+        return table.concat(result)
+    end
+end
+
+----------------------------------------------------------------------
+-- Inject decoder AST (runtime)
+----------------------------------------------------------------------
+
+function ConstantArray:addDecodeCode(ast)
+    local r2DecodeCode = [[
+    do
+        x8 = getfenv()
+        i2 = unpack
+        z6 = _ENV
+
+        local arr = ARR
+        local function r2_decode(str, key)
+            local result = {}
+            for i = 1, #str do
+                local byte = string.byte(str, i)
+                table.insert(result, string.char(bit32.bxor(byte, key)))
+            end
+            return table.concat(result)
+        end
+
+        c9 = newproxy
+        y1 = setmetatable
+
+        local key = 42
+        for i = 1, #arr do
+            local data = arr[i]
+            if type(data) == "string" then
+                arr[i] = r2_decode(data, key)
+            end
+        end
+
+        z9 = getmetatable
+        j8 = select
+        t7 = getfenv
+    end
+    ]]
+
+    local parser = Parser:new({
+        LuaVersion = LuaVersion.Lua51;
+    })
+
+    local newAst = parser:parse(r2DecodeCode)
+    local forStat = newAst.body.statements[1]
+    forStat.body.scope:setParent(ast.body.scope)
+
+    visitast(newAst, nil, function(node, data)
+        if node.kind == AstKind.VariableExpression then
+            if node.scope:getVariableName(node.id) == "ARR" then
+                data.scope:removeReferenceToHigherScope(node.scope, node.id)
+                data.scope:addReferenceToHigherScope(self.rootScope, self.arrId)
+                node.scope = self.rootScope
+                node.id = self.arrId
+            end
+        end
+    end)
+
+    table.insert(ast.body.statements, 1, forStat)
+end
+
+----------------------------------------------------------------------
+-- Apply main obfuscation
+----------------------------------------------------------------------
+
+function ConstantArray:apply(ast, pipeline)
+    self.rootScope = ast.body.scope;
+    self.arrId     = self.rootScope:addVariable();
+
+    self.base64chars = table.concat(util.shuffle{
+        "A","B","C","D","E","F","G","H","I","J","K","L","M","N","O","P","Q","R","S","T","U","V","W","X","Y","Z",
+        "a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q","r","s","t","u","v","w","x","y","z",
+        "0","1","2","3","4","5","6","7","8","9","+","/",
+    });
+
+    self.constants = {};
+    self.lookup    = {};
+
+    -- Extract Constants
+    visitast(ast, nil, function(node, data)
+        if math.random() <= self.Treshold then
+            node.__apply_constant_array = true;
+            if node.kind == AstKind.StringExpression then
+                self:addConstant(node.value);
+            elseif not self.StringsOnly then
+                if node.isConstant and node.value ~= nil then
+                    self:addConstant(node.value);
+                end
+            end
+        end
+    end);
+
+    -- Shuffle Array
+    if self.Shuffle then
+        self.constants = util.shuffle(self.constants);
+        self.lookup    = {};
+        for i, v in ipairs(self.constants) do
+            self.lookup[v] = i;
+        end
+    end
+
+    -- Set Wrapper Function Offset
+    self.wrapperOffset = math.random(-self.MaxWrapperOffset, self.MaxWrapperOffset);
+    self.wrapperId     = self.rootScope:addVariable();
+
+    visitast(ast, function(node, data)
+        if self.LocalWrapperCount > 0 and node.kind == AstKind.Block and node.isFunctionBlock and math.random() <= self.LocalWrapperTreshold then
+            local id = node.scope:addVariable()
+            data.functionData.local_wrappers = { id = id; scope = node.scope }
+            local nameLookup = {}
+            for i = 1, self.LocalWrapperCount, 1 do
+                local name
+                repeat
+                    name = callNameGenerator(pipeline.namegenerator, math.random(1, self.LocalWrapperArgCount * 16));
+                until not nameLookup[name]
+                nameLookup[name] = true
+
+                local offset = math.random(-self.MaxWrapperOffset, self.MaxWrapperOffset);
+                local argPos = math.random(1, self.LocalWrapperArgCount);
+
+                data.functionData.local_wrappers[i] = {
+                    arg   = argPos,
+                    index = name,
+                    offset = offset,
+                };
+                data.functionData.__used = false;
+            end
+        end
+        if node.__apply_constant_array then
+            data.functionData.__used = true;
+        end
+    end,
+    function(node, data)
+        if node.__apply_constant_array then
+            if node.kind == AstKind.StringExpression then
+                return self:getConstant(node.value, data);
+            elseif not self.StringsOnly and node.isConstant and node.value ~= nil then
+                return self:getConstant(node.value, data);
+            end
+            node.__apply_constant_array = nil;
+        end
+
+        if self.LocalWrapperCount > 0 and node.kind == AstKind.Block and node.isFunctionBlock and data.functionData.local_wrappers and data.functionData.__used then
+            data.functionData.__used = nil;
+            local elems = {};
+            local wrappers = data.functionData.local_wrappers;
+            for i = 1, self.LocalWrapperCount, 1 do
+                local wrapper = wrappers[i];
+                local argPos = wrapper.arg;
+                local offset = wrapper.offset;
+                local name   = wrapper.index;
+
+                local funcScope = Scope:new(node.scope);
+                local arg = nil;
+                local args = {};
+                for i = 1, self.LocalWrapperArgCount, 1 do
+                    args[i] = funcScope:addVariable();
+                    if i == argPos then arg = args[i]; end
+                end
+
+                local addSubArg;
+                if offset < 0 then
+                    addSubArg = Ast.SubExpression(Ast.VariableExpression(funcScope, arg), Ast.NumberExpression(-offset));
+                else
+                    addSubArg = Ast.AddExpression(Ast.VariableExpression(funcScope, arg), Ast.NumberExpression(offset));
+                end
+
+                funcScope:addReferenceToHigherScope(self.rootScope, self.wrapperId);
+                local callArg = Ast.FunctionCallExpression(Ast.VariableExpression(self.rootScope, self.wrapperId), { addSubArg });
+
+                local fargs = {};
+                for i, v in ipairs(args) do
+                    fargs[i] = Ast.VariableExpression(funcScope, v);
+                end
+
+                elems[i] = Ast.KeyedTableEntry(
+                    Ast.StringExpression(name),
+                    Ast.FunctionLiteralExpression(fargs, Ast.Block({
+                        Ast.ReturnStatement({ callArg });
+                    }, funcScope))
+                )
+            end
+
+            table.insert(node.statements, 1, Ast.LocalVariableDeclaration(node.scope, { wrappers.id }, {
+                Ast.TableConstructorExpression(elems)
+            }))
+        end
+    end)
+
+    self:addDecodeCode(ast);
+
+    local steps = util.shuffle({
+        function() 
+            local funcScope = Scope:new(self.rootScope);
+            funcScope:addReferenceToHigherScope(self.rootScope, self.arrId);
+
+            local arg = funcScope:addVariable();
+            local addSubArg;
+            if self.wrapperOffset < 0 then
+                addSubArg = Ast.SubExpression(Ast.VariableExpression(funcScope, arg), Ast.NumberExpression(-self.wrapperOffset));
+            else
+                addSubArg = Ast.AddExpression(Ast.VariableExpression(funcScope, arg), Ast.NumberExpression(self.wrapperOffset));
+            end
+
+            table.insert(ast.body.statements, 1, Ast.LocalFunctionDeclaration(self.rootScope, self.wrapperId, {
+                Ast.VariableExpression(funcScope, arg)
+            }, Ast.Block({
+                Ast.ReturnStatement({
+                    Ast.IndexExpression(Ast.VariableExpression(self.rootScope, self.arrId), addSubArg)
+                });
+            }, funcScope)));
+        end,
+        function()
+            if self.Rotate and #self.constants > 1 then
+                local shift = math.random(1, #self.constants - 1);
+                rotate(self.constants, -shift);
+                self:addRotateCode(ast, shift);
+            end
+        end,
+    });
+
+    for i, f in ipairs(steps) do f(); end
+
+    -- Add the Array Declaration
+    table.insert(ast.body.statements, 1, Ast.LocalVariableDeclaration(self.rootScope, {self.arrId}, {self:createArray()}));
+
+    self.rootScope = nil;
+    self.arrId     = nil;
+    self.constants = nil;
+    self.lookup    = nil;
+end
+
+----------------------------------------------------------------------
+return ConstantArray;
