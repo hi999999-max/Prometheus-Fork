@@ -5,6 +5,50 @@
 -- This Script provides a Simple Obfuscation Step that wraps the entire Script into a function
 -- (now with R2 encryption instead of ascii85)
 
+-- --------------------------------------------------------
+-- Bit32 Compatibility Layer for Lua 5.3+
+-- Ensures bit32.* works even if not built-in.
+-- --------------------------------------------------------
+if not bit32 then
+    bit32 = {}
+
+    -- mask to 32 bits
+    local function band32(x) return x & 0xFFFFFFFF end
+
+    function bit32.bxor(a, b)
+        return (a ~ b) & 0xFFFFFFFF
+    end
+
+    function bit32.band(a, b)
+        return (a & b) & 0xFFFFFFFF
+    end
+
+    function bit32.bor(a, b)
+        return (a | b) & 0xFFFFFFFF
+    end
+
+    function bit32.bnot(a)
+        return (~a) & 0xFFFFFFFF
+    end
+
+    function bit32.lshift(a, b)
+        return (a << b) & 0xFFFFFFFF
+    end
+
+    function bit32.rshift(a, b)
+        return (a >> b) & 0xFFFFFFFF
+    end
+
+    function bit32.arshift(a, b)
+        -- preserve sign bit when shifting
+        if a & 0x80000000 ~= 0 then
+            return ((a >> b) | (~0 << (32 - b))) & 0xFFFFFFFF
+        else
+            return (a >> b) & 0xFFFFFFFF
+        end
+    end
+end
+
 local Step = require("prometheus.step")
 local Ast = require("prometheus.ast")
 local Scope = require("prometheus.scope")
