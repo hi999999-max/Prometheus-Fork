@@ -9,6 +9,10 @@
 -- Bit32 Compatibility Layer for Lua 5.3+
 -- Ensures bit32.* works even if not built-in.
 -- --------------------------------------------------------
+if not unpack then
+    unpack = table.unpack
+end
+
 if not bit32 then
     bit32 = {}
 
