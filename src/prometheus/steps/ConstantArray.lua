@@ -263,17 +263,17 @@ end
 ----------------------------------------------------------------------
 
 function ConstantArray:addDecodeCode(ast)
-    local r2DecodeCode = [[
+    local r2DecodeCode = [=[
     do
         x8 = getfenv()
         i2 = unpack
         z6 = _ENV
 
         local arr = ARR
-        local function r2_decode(str, key)
+        local function r2_decode(hex, key)
             local result = {}
-            for i = 1, #str do
-                local byte = string.byte(str, i)
+            for i = 1, #hex, 2 do
+                local byte = tonumber(hex:sub(i, i+1), 16)
                 table.insert(result, string.char(bit32.bxor(byte, key)))
             end
             return table.concat(result)
@@ -294,8 +294,7 @@ function ConstantArray:addDecodeCode(ast)
         j8 = select
         t7 = getfenv
     end
-    ]]
-
+]=]
     local parser = Parser:new({
         LuaVersion = LuaVersion.Lua51;
     })
